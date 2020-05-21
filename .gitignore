@@ -10,3 +10,4 @@ sharpmake/
 *.vcxproj
 *.tlog
 *.filters
+*.lastcodeanalysissucceeded

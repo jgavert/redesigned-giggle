@@ -66,7 +66,7 @@ struct StealableQueue
   std::mutex lock; // version 1 stealable queue works with mutex.
   StealableQueue(size_t group_id): m_group_id(group_id){}
   StealableQueue(StealableQueue& other): m_group_id(other.m_group_id){}
-  StealableQueue(StealableQueue&& other): m_group_id(other.m_group_id){}
+  StealableQueue(StealableQueue&& other) noexcept : m_group_id(other.m_group_id) {}
 };
 
 struct ThreadData
@@ -79,7 +79,7 @@ struct ThreadData
   ThreadData(){}
   ThreadData(size_t id, size_t group_id, uint64_t group_mask):m_id(id), m_group_id(group_id), m_group_mask(group_mask){}
   ThreadData(ThreadData& other) : m_coroStack(other.m_coroStack), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask){}
-  ThreadData(ThreadData&& other) : m_coroStack(std::move(other.m_coroStack)), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask){}
+  ThreadData(ThreadData&& other) noexcept : m_coroStack(std::move(other.m_coroStack)), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask) {}
 };
 namespace locals
 {

@@ -125,7 +125,7 @@ public:
   Task(Task& other) : handle_(other.handle_) {
     assert(handle_);
   }
-  Task(Task&& other) : handle_(std::move(other.handle_)) {
+  Task(Task&& other) noexcept : handle_(std::move(other.handle_)) {
     assert(handle_);
     other.handle_ = nullptr;
   }
