@@ -1,7 +1,10 @@
 #include <cstdio>
-#include <scheduler/version0/stolen_task.hpp>
+#include <scheduler/version1/stolen_task_v1.hpp>
 #include <chrono>
 #include <cassert>
+
+namespace taskstealer_c = taskstealer_v1;
+namespace coro_c = coro_v1;
 
 class Timer
 {
@@ -40,7 +43,7 @@ int addInTreeNormal(int treeDepth) {
   return sum;
 }
 
-coro::StolenTask<int> addInTreeTS(int treeDepth, int parallelDepth) noexcept {
+coro_c::StolenTask<int> addInTreeTS(int treeDepth, int parallelDepth) noexcept {
   if (treeDepth <= 0)
     co_return 1;
   if (treeDepth > parallelDepth) {
@@ -58,7 +61,7 @@ coro::StolenTask<int> addInTreeTS(int treeDepth, int parallelDepth) noexcept {
   }
 }
 
-coro::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
+coro_c::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
   Timer time2;
   size_t mint = 0, maxt = 0;
   size_t avegMin = 0, avegMax = 0;
@@ -69,7 +72,7 @@ coro::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
   maxt = 0;
   auto omi = mint;
   auto oma = 0;
-  auto stats = taskstealer::globals::s_stealPool->stats();
+  auto stats = taskstealer_c::globals::s_stealPool->stats();
   size_t aveg = 0;
   for (int i = 0; i < 2000; i++) {
     auto another = addInTreeTS(treeSize, treeSize - computeTree);
@@ -84,7 +87,7 @@ coro::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
       avegMin = avegMin + mint;
       avegMax = avegMax + maxt;
       aveCount++;
-      auto newTasksDone = taskstealer::globals::s_stealPool->stats();
+      auto newTasksDone = taskstealer_c::globals::s_stealPool->stats();
       auto diffDone = (newTasksDone.tasks_done - stats.tasks_done) / 100;
       auto diffStolen = newTasksDone.tasks_stolen - stats.tasks_stolen;
       auto stealsWithinL3 = (newTasksDone.tasks_stolen_within_l3 - stats.tasks_stolen_within_l3) / float(diffStolen) * 100;
@@ -103,6 +106,6 @@ coro::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
 }
 
 int main(int argc, char** argv) {
-  taskstealer::globals::createThreadPool();
+  taskstealer_c::globals::createThreadPool();
   asyncLoopTest(15, 15).get();
 }

@@ -2,7 +2,7 @@
 #include "scheduler/version1/task_stealing_pool_v1.hpp"
 #include "scheduler/coroutine/coroutine_helpers.hpp"
 
-namespace coro
+namespace coro_v1
 {
 template<typename T>
 class StolenTask {
