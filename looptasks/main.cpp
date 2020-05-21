@@ -64,6 +64,7 @@ coro::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
   size_t avegMin = 0, avegMax = 0;
   size_t aveCount = 0;
   int a = addInTreeNormal(treeSize);
+  auto refTime = time2.timeMicro();
   mint = std::numeric_limits<size_t>::max();
   maxt = 0;
   auto omi = mint;
@@ -91,7 +92,7 @@ coro::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
       auto diffStealTries = (newTasksDone.steal_tries - stats.steal_tries) / 100;
       auto diffUnforked = (newTasksDone.tasks_unforked - stats.tasks_unforked) / 100;
       stats = newTasksDone;
-      printf("%d. aveg: %.3fms min: %.3fms max: %.3fms tasks done: %zu tasks stolen: %zu(from within L3 cache: %.1f%%) failed steals: %zu didn't steal: %zu\n", i, aveg / 100 / 1000.f, mint / 1000.f, maxt / 1000.f, diffDone, diffStolen, stealsWithinL3, diffStealTries, diffUnforked);
+      printf("%d. ref: %.3fms ratio %.2f aveg: %.3fms min: %.3fms max: %.3fms tasks done: %zu tasks stolen: %zu(from within L3 cache: %.1f%%) failed steals: %zu didn't steal: %zu\n",i, refTime/1000.f, refTime / (aveg / 100.f), aveg / 100 / 1000.f, mint / 1000.f, maxt / 1000.f, diffDone, diffStolen, stealsWithinL3, diffStealTries, diffUnforked);
       aveg = 0;
       mint = omi;
       maxt = oma;
@@ -103,5 +104,5 @@ coro::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
 
 int main(int argc, char** argv) {
   taskstealer::globals::createThreadPool();
-  asyncLoopTest(26, 10).get();
+  asyncLoopTest(24, 10).get();
 }
