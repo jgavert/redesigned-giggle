@@ -30,6 +30,27 @@ namespace CoroutineStealer
     }
 
     [Sharpmake.Generate]
+    class LoopTasks : CommonProject
+    {
+        public string BasePath = @"[project.ProjectBasePath]/looptasks";
+        public LoopTasks()
+        {
+            Name = "LoopTasks";
+            SourceRootPath = "[project.BasePath]";
+
+            IsFileNameToLower = false;
+        }
+
+        [Configure()]
+        public void Configure(Configuration conf, Target target)
+        {
+            base.ConfigureAll(conf, target);
+            conf.AddPublicDependency<Scheduler>(target);
+            conf.Output = Project.Configuration.OutputType.Exe;
+        }
+    }
+
+    [Sharpmake.Generate]
     public class ExeLibSolution : Sharpmake.Solution
     {
         public ExeLibSolution()
@@ -49,6 +70,7 @@ namespace CoroutineStealer
             conf.SolutionFileName = "[solution.Name]_[target.DevEnv]_[target.Platform]";
             conf.SolutionPath = @"[solution.SharpmakeCsPath]/projects";
             conf.AddProject<Benchmark>(target);
+            conf.AddProject<LoopTasks>(target);
         }
     }
 

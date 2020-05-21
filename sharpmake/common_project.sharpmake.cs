@@ -21,7 +21,6 @@ namespace CoroutineStealer
         public virtual void ConfigureAll(Configuration conf, Target target)
         {
             conf.Name = @"[target.Optimization] [target.OutputType]";
-            //conf.ProjectPath = @"[project.SharpmakeCsPath]/projects";
             conf.ProjectFileName = "[project.Name]_[target.DevEnv]_[target.Platform]_[target.OutputType]";
             conf.TargetLibraryPath = "[project.ProjectBasePath]/output/[conf.ProjectFileName]";
             conf.ProjectPath = Path.Combine("[project.SharpmakeCsPath]/projects/[project.Name]");
