@@ -3,7 +3,10 @@ sharpmake/obj
 sharpmake/output
 sharpmake/projects
 sharpmake/
-.lib
-.csproj
-.sln
-.user
+*.lib
+*.csproj
+*.sln
+*.user
+*.vcxproj
+*.tlog
+*.filters
