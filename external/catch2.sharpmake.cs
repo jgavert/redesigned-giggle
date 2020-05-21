@@ -15,6 +15,7 @@ namespace externals
             SourceRootPath = "[project.BasePath]/single_include";
             SourceFilesBlobExcludeRegex.Add("[project.BasePath]/include/*");
             SourceFiles.Add("[project.BasePath]/single_include/catch2/catch.hpp");
+            
         }
 
         [Configure()]
@@ -27,6 +28,7 @@ namespace externals
             conf.ExportDefines.Add("_HAS_DEPRECATED_RESULT_OF");
             conf.IncludePaths.Add("[project.BasePath]/single_include");
             conf.TargetLibraryPath = "[project.BasePath]/lib/[target.OutputType]";
+            conf.SolutionFolder = "external";
         }
     }
 }

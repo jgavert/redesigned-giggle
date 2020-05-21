@@ -21,6 +21,7 @@ namespace CoroutineStealer
             base.ConfigureAll(conf, target);
             conf.Output = Project.Configuration.OutputType.Lib;
             conf.TargetLibraryPath = "[project.BasePath]/lib/[target.OutputType]";
+            conf.SolutionFolder = "lib";
         }
     }
 }
