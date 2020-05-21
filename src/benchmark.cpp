@@ -1,7 +1,7 @@
 #include <catch2/catch.hpp>
 
-#include <v0/coroutine/stolen_task.hpp>
-#include <v0/coroutine/reference_coroutine_task.hpp>
+#include <scheduler/version0/stolen_task.hpp>
+#include <scheduler/coroutine/reference_coroutine_task.hpp>
 
 #include <vector>
 #include <thread>

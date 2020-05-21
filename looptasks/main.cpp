@@ -1,5 +1,5 @@
 #include <cstdio>
-#include <v0/coroutine/stolen_task.hpp>
+#include <scheduler/version0/stolen_task.hpp>
 #include <chrono>
 #include <cassert>
 

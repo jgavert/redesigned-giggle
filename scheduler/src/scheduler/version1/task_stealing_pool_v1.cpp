@@ -1,6 +1,6 @@
-#include "task_stealing_pool.hpp"
+#include "scheduler/version1/task_stealing_pool_v1.hpp"
 
-namespace taskstealer 
+namespace taskstealer_v1 
 {
 namespace locals 
 {

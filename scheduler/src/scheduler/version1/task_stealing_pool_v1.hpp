@@ -1,5 +1,5 @@
 #pragma once
-#include "cpu_info.hpp"
+#include "scheduler/coroutine/cpu_info.hpp"
 #include <atomic>
 #include <vector>
 #include <deque>
@@ -25,7 +25,7 @@
 #endif
 
 
-namespace taskstealer
+namespace taskstealer_v1
 {
 struct StackTask
 {
