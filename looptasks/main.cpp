@@ -104,5 +104,5 @@ coro::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
 
 int main(int argc, char** argv) {
   taskstealer::globals::createThreadPool();
-  asyncLoopTest(24, 10).get();
+  asyncLoopTest(15, 15).get();
 }
