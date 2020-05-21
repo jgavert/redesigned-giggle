@@ -1,5 +1,8 @@
 @echo off
-"./external/Sharpmake/bootstrap.bat" "../../sharpmake/main.sharpmake.cs"
+
+git submodule update --init --recursive
+
+"./sharpmake/bootstrap.bat" "../../sharpmake/main.sharpmake.cs"
 cd ..
 @if %errorlevel% neq 0 goto :error
 
