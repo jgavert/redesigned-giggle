@@ -68,7 +68,7 @@ public:
     taskstealer_v1::globals::s_stealPool->addDependencyToCurrentTask(tracker_);
   }
   ~StolenTask() noexcept {
-    if (handle_)
+    //if (handle_)
       handle_.destroy();
   }
 
@@ -160,22 +160,14 @@ public:
     taskstealer_v1::globals::s_stealPool->addDependencyToCurrentTask(tracker_);
   }
   ~StolenTask() noexcept {
-    //HIGAN_ASSERT(handle_.done(), "coroutine was destroyed by the creator coroutine before coroutine was completed.");
-    //assert(handle_.done());
-    //handle_.destroy();
-#if !defined(STEALER_DESTROY_HANDLES)
     if (handle_)
       handle_.destroy();
-#endif
   }
 
   void wait() noexcept
   {
     if (!handle_.done())
       taskstealer_v1::globals::s_stealPool->execute();
-#if defined(STEALER_DESTROY_HANDLES)
-    handle_.destroy();
-#endif
   }
 
   bool is_ready() const {
