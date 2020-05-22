@@ -68,7 +68,7 @@ public:
     taskstealer_v1::globals::s_stealPool->addDependencyToCurrentTask(tracker_);
   }
   ~StolenTask() noexcept {
-    //if (handle_)
+    if (handle_)
       handle_.destroy();
   }
 
