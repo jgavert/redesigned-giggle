@@ -11,3 +11,4 @@ sharpmake/
 *.tlog
 *.filters
 *.lastcodeanalysissucceeded
+external/projects/

@@ -58,23 +58,18 @@ public:
   T await_resume() noexcept {
     return handle_.promise().m_value;
   }
-  bool await_ready() noexcept {
-    return handle_.done();
+  constexpr bool await_ready() noexcept {
+    return false;
   }
 
   // enemy coroutine needs this coroutines result, therefore we compute it.
   template <typename Type>
-  auto await_suspend(Type handle) noexcept {
-    taskstealer_v1::globals::s_stealPool->addDependencyToCurrentTask(handle, handle_, tracker_);
-    return coro::noop_coroutine();
+  void await_suspend(Type handle) noexcept {
+    taskstealer_v1::globals::s_stealPool->addDependencyToCurrentTask(tracker_);
   }
   ~StolenTask() noexcept {
-    //HIGAN_ASSERT(handle_.done(), "coroutine was destroyed by the creator coroutine before coroutine was completed.");
-    //assert(handle_.done());
-#if !defined(STEALER_DESTROY_HANDLES)
     if (handle_)
       handle_.destroy();
-#endif
   }
 
   T get() noexcept
@@ -82,9 +77,6 @@ public:
     if (!handle_.done())
       taskstealer_v1::globals::s_stealPool->execute();
     auto val = handle_.promise().m_value;
-#if defined(STEALER_DESTROY_HANDLES)
-    handle_.destroy();
-#endif
     return val; 
   }
   bool is_ready() const {
@@ -158,15 +150,14 @@ public:
   }
   void await_resume() noexcept {
   }
-  bool await_ready() noexcept {
-    return handle_.done();
+  constexpr bool await_ready() noexcept {
+    return false;
   }
 
   // enemy coroutine needs this coroutines result, therefore we compute it.
   template <typename Type>
-  auto await_suspend(Type handle) noexcept {
-    taskstealer_v1::globals::s_stealPool->addDependencyToCurrentTask(handle, handle_, tracker_);
-    return coro::noop_coroutine();
+  void await_suspend(Type handle) noexcept {
+    taskstealer_v1::globals::s_stealPool->addDependencyToCurrentTask(tracker_);
   }
   ~StolenTask() noexcept {
     //HIGAN_ASSERT(handle_.done(), "coroutine was destroyed by the creator coroutine before coroutine was completed.");

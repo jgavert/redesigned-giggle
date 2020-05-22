@@ -1,5 +1,6 @@
 #pragma once
 #include "scheduler/coroutine/cpu_info.hpp"
+#include "scheduler/helpers/freelist.hpp"
 #include <atomic>
 #include <vector>
 #include <deque>
@@ -13,7 +14,6 @@
 #include <windows.h>
 
 // stealer always keeps handles alive until it can prove that all dependencies are done...
-#define STEALER_DESTROY_HANDLES
 
 // define this to enable atomic stat collection
 #define STEALER_COLLECT_STATS
@@ -29,23 +29,30 @@ namespace taskstealer_v1
 {
 struct StackTask
 {
-  std::atomic_int* reportCompletion;
+  std::atomic_int* reportCompletion = nullptr;
   std::experimental::coroutine_handle<> handle;
-  std::vector<std::pair<std::experimental::coroutine_handle<>, std::atomic_int*>> childs;
-  std::optional<std::pair<std::experimental::coroutine_handle<>, std::atomic_int*>> currentWaitJoin; // handle address that is waited to be complete, so that handle can continue.
+  std::vector<std::atomic_int*> childs;
+  std::deque<std::atomic_int*> waitQueue; // handle address that is waited to be complete, so that handle can continue.
 
-  bool canExecute() const noexcept {
+  // returns the amount of times "resume" can be called
+  // and how many elements can be removed from waitQueue
+  [[nodiscard]] size_t canExecute() const noexcept {
     if (handle.done())
-      return false;
-    if (currentWaitJoin)
-      return currentWaitJoin.value().second->load() == 0;
-    return true;
+      return 0;
+    size_t count = 0;
+    for (auto&& it : waitQueue) {
+      if (it->load() > 0)
+        return count;
+      count++;
+    }
+    return count;
   }
+
   bool done() const noexcept {
-    if (currentWaitJoin)
+    if (!waitQueue.empty())
       return false;
-    for (auto& child : childs) 
-      if (child.second->load() > 0)
+    for (auto&& child : childs) 
+      if (child != nullptr && child->load() > 0)
         return false;
     return handle.done();
   }
@@ -69,17 +76,53 @@ struct StealableQueue
   StealableQueue(StealableQueue&& other) noexcept : m_group_id(other.m_group_id) {}
 };
 
-struct ThreadData
+struct ThreadCoroStack
 {
   std::deque<StackTask> m_coroStack;
+  size_t m_stackPointer = 0;
+
+  StackTask& current_stack() {
+    assert(m_stackPointer > 0);
+    return m_coroStack[m_stackPointer-1];
+  }
+  void push_stack(std::atomic_int* reportCompletion, std::experimental::coroutine_handle<> handle) {
+    assert(reportCompletion != nullptr);
+    m_stackPointer++;
+    if (m_coroStack.size() <= m_stackPointer) {
+      m_coroStack.push_back(StackTask());
+    }
+    auto& task = current_stack();
+    task.handle = handle;
+    task.reportCompletion = reportCompletion;
+    task.childs.clear();
+    task.waitQueue.clear();
+  }
+  void pop_stack() {
+    assert(m_stackPointer > 0);
+    m_stackPointer--;
+  }
+  bool empty() {
+    return m_stackPointer == 0;
+  }
+};
+
+struct ThreadData
+{
+  ThreadCoroStack m_coroStack;
+  AllocatingFreelist<std::atomic_int> m_atomics;
   size_t m_id = 0;
   size_t m_wakeThread = 0;
   size_t m_group_id = 0;
   uint64_t m_group_mask = 0;
   ThreadData(){}
   ThreadData(size_t id, size_t group_id, uint64_t group_mask):m_id(id), m_group_id(group_id), m_group_mask(group_mask){}
-  ThreadData(ThreadData& other) : m_coroStack(other.m_coroStack), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask){}
-  ThreadData(ThreadData&& other) noexcept : m_coroStack(std::move(other.m_coroStack)), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask) {}
+  ThreadData(ThreadData& other) : m_coroStack(other.m_coroStack), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask) { assert(false); }
+  ThreadData(ThreadData&& other) noexcept
+    : m_coroStack(std::move(other.m_coroStack))
+    , m_atomics(std::move(other.m_atomics))
+    , m_id(other.m_id)
+    , m_group_id(other.m_group_id)
+    , m_group_mask(other.m_group_mask) {}
 };
 namespace locals
 {
@@ -134,11 +177,15 @@ class ThreadPool
     size_t l3threads = info.numas.front().threads / info.numas.front().coreGroups.size();
 
     m_poolAlive = true;
+    auto threadStacksLeft = m_threads;
     for (size_t group = 0; group < info.numas.front().coreGroups.size(); ++group){
       for (size_t t = 0; t < l3threads; t++) {
+        if (threadStacksLeft == 0)
+          break;
         auto index = group*l3threads + t;
         m_data.emplace_back(index, group, info.numas.front().coreGroups[group].mask);
         m_stealQueues.emplace_back(group);
+        threadStacksLeft--;
       }
     }
     m_thread_sleeping = m_threads-1;
@@ -216,11 +263,12 @@ class ThreadPool
     auto& data = m_data[threadID];
     FreeLoot loot{};
     loot.handle = handle;
-    std::atomic_int* counter = new std::atomic_int(1);
+    std::atomic_int* counter = data.m_atomics.allocate();
+    counter->store(1);
     loot.reportCompletion = counter;
     if (!data.m_coroStack.empty())
     {
-      data.m_coroStack.front().childs.push_back(std::make_pair(handle, counter));
+      data.m_coroStack.current_stack().childs.push_back(counter);
     }
     else
     {
@@ -241,55 +289,67 @@ class ThreadPool
   }
 
   // called by coroutine - when entering co_await, handle is what current coroutine is depending from.
-  void addDependencyToCurrentTask(std::experimental::coroutine_handle<> handleSuspending, std::experimental::coroutine_handle<> handleNeeded, uintptr_t trackerPtr) noexcept {
+  void addDependencyToCurrentTask(uintptr_t trackerPtr) noexcept {
     size_t threadID = static_cast<size_t>(locals::thread_id);
     if (!locals::thread_from_pool)
       threadID = 0;
     auto& data = m_data[threadID];
 
-    assert(!data.m_coroStack.front().currentWaitJoin); // overriding...
     assert(trackerPtr != 0); // "tracker should be always valid");
     std::atomic_int* tracker = reinterpret_cast<std::atomic_int*>(trackerPtr);
-    assert(data.m_coroStack.front().handle == handleSuspending);
-    data.m_coroStack.front().currentWaitJoin = std::make_pair(handleNeeded, tracker);
+    data.m_coroStack.current_stack().waitQueue.push_back(tracker);
+  }
+
+  // call after all handles are allowed to be killed.
+  void updateStack(ThreadData& data, size_t allowedQueueToClear) {
+    auto& task = data.m_coroStack.current_stack();
+    while (allowedQueueToClear > 0) {
+      auto atomPtr = task.waitQueue.front();
+      task.waitQueue.pop_front();
+      for (auto&& it : task.childs)
+        if (it == atomPtr)
+        {
+          data.m_atomics.release(it);
+          it = nullptr;
+          break;
+        }
+      allowedQueueToClear--;
+    }
   }
 
   void workOnTasks(ThreadData& myData, StealableQueue& myQueue) noexcept {
     if (!myData.m_coroStack.empty()) {
-      auto& task = myData.m_coroStack.front();
-      if (task.canExecute() && !task.done()) {
-        task.currentWaitJoin = {};
-        task.handle.resume();
+      auto& task = myData.m_coroStack.current_stack();
+      auto executeCount = task.canExecute();
+      if (executeCount > 0) {
+        for (size_t run = 0; run < executeCount; ++run)
+          task.handle.resume();
+        updateStack(myData, executeCount);
       }
       if (task.done()) {
           auto* ptr = task.reportCompletion;
-          for (auto&& it : myData.m_coroStack.front().childs) {
-#if defined(STEALER_DESTROY_HANDLES)
-            it.first.destroy();
-#endif
-            delete it.second;
+          assert(task.waitQueue.empty());
+          for (auto&& it : myData.m_coroStack.current_stack().childs) {
+            if (it != nullptr)
+              myData.m_atomics.release(it);
           }
-          myData.m_coroStack.pop_front();
+          myData.m_coroStack.pop_stack();
           ptr->store(0);
           STEALER_STATS_IF m_tasks_done++;
       }
       else {
         if (auto task = unfork(myData)) {
-          StackTask st{};
-          st.reportCompletion = task.value().reportCompletion;
-          st.handle = task.value().handle;
-          myData.m_coroStack.push_front(st);
+          myData.m_coroStack.push_stack(task.value().reportCompletion, task.value().handle);
           m_doable_tasks--;
+          myData.m_coroStack.current_stack().handle.resume();
         }
       }
     }
     else if (myData.m_coroStack.empty()) {
       if (auto task = stealTask(myData)) {
-        StackTask st{};
-        st.reportCompletion = task.value().reportCompletion;
-        st.handle = task.value().handle;
-        myData.m_coroStack.push_front(st);
+        myData.m_coroStack.push_stack(task.value().reportCompletion, task.value().handle);
         m_doable_tasks--;
+        myData.m_coroStack.current_stack().handle.resume();
       }
     }
   }
@@ -301,11 +361,9 @@ class ThreadPool
     auto& myQueue = m_stealQueues[myData.m_id];
     while(m_poolAlive){
       if (auto task = stealTask(myData)) {
-        StackTask st{};
-        st.reportCompletion = task.value().reportCompletion;
-        st.handle = task.value().handle;
-        myData.m_coroStack.push_front(st);
+        myData.m_coroStack.push_stack(task.value().reportCompletion, task.value().handle);
         m_doable_tasks--;
+        myData.m_coroStack.current_stack().handle.resume();
       } else if (myData.m_coroStack.empty() && m_doable_tasks.load() == 0){
         std::unique_lock<std::mutex> lk(sleepLock);
         m_thread_sleeping++;
@@ -333,11 +391,11 @@ class ThreadPool
     return ptr;
   }
 
-  void freeCompletedWork() noexcept {
+  void freeCompletedWork(ThreadData& data) noexcept {
     std::lock_guard<std::mutex> guard(m_global);
     while(!m_nobodyOwnsTasks.empty() && m_nobodyOwnsTasks.back().reportCompletion->load() == 0) {
       // illegal to destroy handles here, otherwise we cannot get the value from within the handle to the caller.
-      delete m_nobodyOwnsTasks.back().reportCompletion;
+      data.m_atomics.release(m_nobodyOwnsTasks.back().reportCompletion);
       m_nobodyOwnsTasks.pop_back();
       m_globalTasksLeft--;
     }
@@ -351,7 +409,7 @@ class ThreadPool
       while (wait && wait->load() > 0) {
         workOnTasks(myData, myQueue);
       }
-      freeCompletedWork();
+      freeCompletedWork(myData);
     }
   }
 };

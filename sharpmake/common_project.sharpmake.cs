@@ -37,8 +37,10 @@ namespace CoroutineStealer
             conf.Options.Add(Options.Vc.Compiler.EnhancedInstructionSet.AdvancedVectorExtensions2);
             conf.Defines.Add("WIN32_LEAN_AND_MEAN");
             conf.Defines.Add("NOMINMAX");
-            conf.AdditionalCompilerOptions.Add(new string[] { "/await" });
-            conf.AdditionalCompilerOptions.Add(new string[] { "/wd4530" });
+            conf.AdditionalCompilerOptions.Add(new string[] { "/await", "/EHsc" });
+            conf.Options.Add(Options.Vc.Linker.GenerateDebugInformation.Enable);
+            conf.Options.Add(Options.Vc.General.DebugInformation.ProgramDatabase);
+            //conf.AdditionalCompilerOptions.Add(new string[] { "/wd4530" });
             if (target.Optimization == Optimization.Debug) {
                 configureDebug(conf, target);
             } else
