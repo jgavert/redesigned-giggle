@@ -2,6 +2,7 @@
 
 #include <scheduler/version0/stolen_task.hpp>
 #include <scheduler/version1/stolen_task_v1.hpp>
+#include <scheduler/version2/stolen_task_v2.hpp>
 #include <scheduler/coroutine/reference_coroutine_task.hpp>
 
 #include <vector>
@@ -89,7 +90,8 @@ namespace {
 #define checkAllEmptyTasksSpawning(argument) \
     BenchFunctionWait(SpawnEmptyTasksInTree<reference::Task<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<coro::StolenTask<void>>, argument); \
-    BenchFunctionWait(SpawnEmptyTasksInTree<coro_v1::StolenTask<void>>, argument)
+    BenchFunctionWait(SpawnEmptyTasksInTree<coro_v1::StolenTask<void>>, argument); \
+    BenchFunctionWait(SpawnEmptyTasksInTree<coro_v2::StolenTask<void>>, argument)
 
 
 #define checkAllFibonacci(argument) \
@@ -97,11 +99,13 @@ namespace {
     BenchFunction(FibonacciReferenceRecursive, argument); \
     BenchFunction(FibonacciCoro<reference::Task<uint64_t>>, argument); \
     BenchFunction(FibonacciCoro<coro::StolenTask<uint64_t>>, argument); \
-    BenchFunction(FibonacciCoro<coro_v1::StolenTask<uint64_t>>, argument)
+    BenchFunction(FibonacciCoro<coro_v1::StolenTask<uint64_t>>, argument); \
+    BenchFunction(FibonacciCoro<coro_v2::StolenTask<uint64_t>>, argument)
 
 TEST_CASE("Benchmark Fibonacci", "[benchmark]") {
     taskstealer::globals::createThreadPool();
     taskstealer_v1::globals::createThreadPool();
+    taskstealer_v2::globals::createThreadPool();
     reference::globals::createExecutor();
     
     CHECK(FibonacciReferenceIterative(0).get() == 1);
@@ -114,6 +118,8 @@ TEST_CASE("Benchmark Fibonacci", "[benchmark]") {
     CHECK(FibonacciCoro<coro::StolenTask<uint64_t>>(5).get() == 8);
     CHECK(FibonacciCoro<coro_v1::StolenTask<uint64_t>>(0).get() == 1);
     CHECK(FibonacciCoro<coro_v1::StolenTask<uint64_t>>(5).get() == 8);
+    CHECK(FibonacciCoro<coro_v2::StolenTask<uint64_t>>(0).get() == 1);
+    CHECK(FibonacciCoro<coro_v2::StolenTask<uint64_t>>(5).get() == 8);
     checkAllFibonacci(20);
     checkAllEmptyTasksSpawning(100);
     checkAllEmptyTasksSpawning(1000);

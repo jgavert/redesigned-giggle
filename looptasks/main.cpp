@@ -1,11 +1,12 @@
 #include <cstdio>
+#include <scheduler/version2/stolen_task_v2.hpp>
 #include <scheduler/version1/stolen_task_v1.hpp>
 #include <scheduler/version0/stolen_task.hpp>
 #include <chrono>
 #include <cassert>
 
-namespace taskstealer_c = taskstealer_v1;
-namespace coro_c = coro_v1;
+namespace taskstealer_c = taskstealer_v2;
+namespace coro_c = coro_v2;
 //namespace taskstealer_c = taskstealer;
 //namespace coro_c = coro;
 
@@ -110,5 +111,5 @@ coro_c::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
 
 int main(int argc, char** argv) {
   taskstealer_c::globals::createThreadPool();
-  asyncLoopTest(24, 8).get();
+  asyncLoopTest(19, 19).get();
 }
