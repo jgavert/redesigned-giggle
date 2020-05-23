@@ -10,8 +10,7 @@ public:
   struct promise_type {
     using coro_handle = std::experimental::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
-      std::atomic_int* counter = taskstealer_v2::globals::s_stealPool->localAllocator().allocObj<std::atomic_int>();
-      return StolenTask(coro_handle::from_promise(*this), counter);
+      return StolenTask(coro_handle::from_promise(*this), &this->counter);
     }
     void* operator new(size_t sz) {
       return taskstealer_v2::globals::s_stealPool->localAllocator().allocate(sz);
@@ -31,34 +30,30 @@ public:
       std::terminate();
     }
     T m_value;
+    std::atomic_int counter = 1;
   };
   using coro_handle = std::experimental::coroutine_handle<promise_type>;
-  StolenTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle), tracker_(counter)
+  StolenTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
-    counter->store(1);
     taskstealer_v2::globals::s_stealPool->spawnTask(handle_, counter);
   }
   StolenTask(StolenTask& other) noexcept {
     handle_ = other.handle_;
-    tracker_ = other.tracker_;
   };
   StolenTask(StolenTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
-    tracker_ = other.tracker_;
     assert(handle_);
     other.handle_ = nullptr;
   }
   StolenTask& operator=(StolenTask& other) noexcept {
     handle_ = other.handle_;
-    tracker_ = other.tracker_;
     return *this;
   };
   StolenTask& operator=(StolenTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
-    tracker_ = other.tracker_;
     assert(handle_);
     other.handle_ = nullptr;
     return *this;
@@ -73,12 +68,11 @@ public:
   // enemy coroutine needs this coroutines result, therefore we compute it.
   template <typename Type>
   void await_suspend(Type handle) noexcept {
-    taskstealer_v2::globals::s_stealPool->addDependencyToCurrentTask(tracker_);
+    taskstealer_v2::globals::s_stealPool->addDependencyToCurrentTask(&handle_.promise().counter);
   }
   ~StolenTask() noexcept {
     if (handle_)
       handle_.destroy();
-    taskstealer_v2::globals::s_stealPool->localAllocator().freeObj(tracker_);
   }
 
   T get() noexcept
@@ -103,7 +97,6 @@ public:
   // is_ready() are you ready?
 private:
   std::experimental::coroutine_handle<promise_type> handle_;
-  std::atomic_int* tracker_;
 };
 
 // void version
@@ -113,8 +106,7 @@ public:
   struct promise_type {
     using coro_handle = std::experimental::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
-      std::atomic_int* counter = taskstealer_v2::globals::s_stealPool->localAllocator().allocObj<std::atomic_int>();
-      return StolenTask(coro_handle::from_promise(*this), counter);
+      return StolenTask(coro_handle::from_promise(*this), &this->counter);
     }
     void* operator new(size_t sz) {
       return taskstealer_v2::globals::s_stealPool->localAllocator().allocate(sz);
@@ -133,34 +125,30 @@ public:
     void unhandled_exception() noexcept {
       std::terminate();
     }
+    std::atomic_int counter = 1;
   };
   using coro_handle = std::experimental::coroutine_handle<promise_type>;
-  StolenTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle), tracker_(counter)
+  StolenTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
-    counter->store(1);
     taskstealer_v2::globals::s_stealPool->spawnTask(handle_, counter);
   }
   StolenTask(StolenTask& other) noexcept {
     handle_ = other.handle_;
-    tracker_ = other.tracker_;
   };
   StolenTask(StolenTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
-    tracker_ = other.tracker_;
     assert(handle_);
     other.handle_ = nullptr;
   }
   StolenTask& operator=(StolenTask& other) noexcept {
     handle_ = other.handle_;
-    tracker_ = other.tracker_;
     return *this;
   };
   StolenTask& operator=(StolenTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
-    tracker_ = other.tracker_;
     assert(handle_);
     other.handle_ = nullptr;
     return *this;
@@ -174,12 +162,11 @@ public:
   // enemy coroutine needs this coroutines result, therefore we compute it.
   template <typename Type>
   void await_suspend(Type handle) noexcept {
-    taskstealer_v2::globals::s_stealPool->addDependencyToCurrentTask(tracker_);
+    taskstealer_v2::globals::s_stealPool->addDependencyToCurrentTask(&handle_.promise().counter);
   }
   ~StolenTask() noexcept {
     if (handle_)
       handle_.destroy();
-    taskstealer_v2::globals::s_stealPool->localAllocator().freeObj(tracker_);
   }
 
   void wait() noexcept
@@ -201,7 +188,6 @@ public:
   // is_ready() are you ready?
 private:
   std::experimental::coroutine_handle<promise_type> handle_;
-  std::atomic_int* tracker_;
 };
 
 template<typename Func>
