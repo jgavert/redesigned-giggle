@@ -1,6 +1,6 @@
 #pragma once
 #include "scheduler/coroutine/cpu_info.hpp"
-//#include "scheduler/helpers/freelist.hpp"
+#include "scheduler/helpers/lockfree_queue.hpp"
 #include "scheduler/helpers/heap_allocator.hpp"
 #include <atomic>
 #include <vector>
@@ -14,8 +14,6 @@
 #include <experimental/coroutine>
 #include <windows.h>
 
-// stealer always keeps handles alive until it can prove that all dependencies are done...
-
 // define this to enable atomic stat collection
 #define STEALER_COLLECT_STATS
 
@@ -25,73 +23,12 @@
 #define STEALER_STATS_IF if (0)
 #endif
 
+// define to use lockfree version
+#define STEALER_USE_LOCKFREE_QUEUE
+
 
 namespace taskstealer_v2
 {
-  template <class T>
-  class LocalAllocator {
-  public:
-    // type definitions
-    typedef T        value_type;
-    typedef T* pointer;
-    typedef const T* const_pointer;
-    typedef T& reference;
-    typedef const T& const_reference;
-    typedef std::size_t    size_type;
-    typedef std::ptrdiff_t difference_type;
-
-    HeapAllocatorRaw* m_allocator = nullptr;
-
-    template <class U>
-    struct rebind {
-      typedef LocalAllocator<U> other;
-    };
-
-    pointer address(reference value) const {
-      return &value;
-    }
-    const_pointer address(const_reference value) const {
-      return &value;
-    }
-
-    LocalAllocator() throw() : m_allocator(nullptr) {
-    }
-    LocalAllocator(HeapAllocatorRaw* allocator) throw() : m_allocator(allocator) {
-    }
-    LocalAllocator(const LocalAllocator& other) throw() : m_allocator(other.m_allocator) {
-    }
-    template <class U>
-    LocalAllocator(const LocalAllocator<U>& other) throw() : m_allocator(other.m_allocator) {
-    }
-    ~LocalAllocator() throw() {
-    }
-
-    size_type max_size() const throw() {
-      assert(m_allocator);
-      return m_allocator->size() / sizeof(T);
-    }
-
-    pointer allocate(size_type num, const void* = 0) {
-      assert(m_allocator);
-      pointer ret = (pointer)(m_allocator->allocate(num * sizeof(T)));
-      return ret;
-    }
-
-    void construct(pointer p, const T& value) {
-      new((void*)p)T(value);
-    }
-
-    void destroy(pointer p) {
-      p->~T();
-    }
-
-    void deallocate(pointer p, size_type num) {
-      assert(m_allocator);
-      m_allocator->free((void*)p);
-    }
-  };
-
-
 struct StackTask
 {
   std::atomic_int* reportCompletion = nullptr;
@@ -100,14 +37,7 @@ struct StackTask
   std::vector<std::atomic_int*> waitQueue; // handle address that is waited to be complete, so that handle can continue.
   size_t atomics_seen = 0;
 
-  /*  StackTask(LocalAllocator<std::atomic_int*> allocator)
-    : childs(allocator), waitQueue(allocator)
-  {
-    //printf("gave locals \n");
-  }*/
-
   // returns the amount of times "resume" can be called
-  // and how many elements can be removed from waitQueue
   [[nodiscard]] size_t canExecute() noexcept {
     if (handle.done())
       return 0;
@@ -118,18 +48,12 @@ struct StackTask
       atomics_seen++;
       count++;
     }
-    /*
-    for (auto&& it : waitQueue) {
-      if (it->load() > 0)
-        return count;
-      count++;
-    }*/
     return count;
   }
 
   bool done() const noexcept {
-    //if (!waitQueue.empty())
-    //  return false;
+    if (!handle.done())
+      return false;
     for (auto&& child : childs) 
       if (child != nullptr && child->load() > 0)
         return false;
@@ -142,13 +66,16 @@ struct FreeLoot
 {
   std::experimental::coroutine_handle<> handle; // this might spawn childs, becomes host that way.
   std::atomic_int* reportCompletion; // when task is done, inform here
-  // I thought of separate queue where to add "completed tasks", but using atomics for icity.
 };
 
 struct StealableQueue
 {
   size_t m_group_id = 0;
-  std::deque<FreeLoot> loot; // get it if you can :smirk:
+#if defined(STEALER_USE_LOCKFREE_QUEUE)
+  rynx::parallel::per_thread_queue<FreeLoot, 1024> loot; // get it if you can :smirk:
+#else
+  std::deque<FreeLoot> loot;
+#endif
   std::mutex lock; // version 1 stealable queue works with mutex.
   StealableQueue(size_t group_id): m_group_id(group_id){}
   StealableQueue(StealableQueue& other): m_group_id(other.m_group_id){}
@@ -157,12 +84,10 @@ struct StealableQueue
 
 struct ThreadCoroStack
 {
-  //LocalAllocator<void*> m_allocator;
   std::deque<StackTask> m_coroStack;
   size_t m_stackPointer = 0;
 
   ThreadCoroStack() {}
-  //ThreadCoroStack(LocalAllocator<void*> allocator) : m_allocator(allocator){}
 
   StackTask& current_stack() {
     assert(m_stackPointer > 0);
@@ -220,7 +145,6 @@ struct ThreadData
     if (m_heap == nullptr) {
       m_heap = malloc(heapSize);
       m_localAllocator = HeapAllocatorRaw(m_heap, heapSize);
-      //m_coroStack = ThreadCoroStack(LocalAllocator<void*>(&m_localAllocator));
     }
   }
 };
@@ -247,8 +171,8 @@ class ThreadPool
   std::vector<StealableQueue> m_stealQueues; // separate to avoid false sharing
   size_t m_threads = 0;
   std::atomic_size_t m_globalTasksLeft = 0;
-  std::atomic_size_t m_doable_tasks = 0;
-  std::atomic_size_t m_thread_sleeping = 0;
+  std::atomic_int m_doable_tasks = 0;
+  std::atomic_int m_thread_sleeping = 0;
 
   // hmm, to make threads sleep in groups...? No sense to wake threads from outside L3 if L3 isn't awake, perf--
   std::mutex sleepLock;
@@ -294,7 +218,8 @@ class ThreadPool
     for (auto&& it : m_data) {
       it.initializeAllocator(perAllocator);
     }
-    m_thread_sleeping = m_threads-1;
+    m_thread_sleeping = static_cast<int>(m_threads)-1;
+    SetThreadAffinityMask(GetCurrentThread(), m_data[0].m_group_mask);
     for (size_t t = 1; t < m_threads; t++) {
       m_threadHandles.push_back(std::thread(&ThreadPool::thread_loop, this, std::ref(m_data[t])));
       SetThreadAffinityMask(m_threadHandles.back().native_handle(), m_data[t].m_group_mask);
@@ -302,28 +227,30 @@ class ThreadPool
   }
   ~ThreadPool() noexcept {
     m_poolAlive = false;
-    m_doable_tasks = m_threads+1;
+    m_doable_tasks = static_cast<int>(m_threads)+1;
     cv.notify_all();
     for (auto& it : m_threadHandles)
       it.join();
   }
 
-  void wakeThread(ThreadData& thread) noexcept {
-    size_t countToWake = std::max(std::min(0ull, m_doable_tasks.load()), m_thread_sleeping.load());
-    if (countToWake > 0)
-      cv.notify_one();
-    else if (countToWake > 1)
+  inline void wakeThread(ThreadData& thread) noexcept {
+    int countToWake = std::min(static_cast<int>(m_doable_tasks.load()), m_thread_sleeping.load());
+    if (countToWake > 2)
       cv.notify_all();
+    else if (countToWake > 0)
+      cv.notify_one();
   }
 
   std::optional<FreeLoot> stealTask(const ThreadData& thread) noexcept {
-    if (m_doable_tasks > 0)
+    //if (m_doable_tasks > 0)
     {
+      FreeLoot stealed = {};
       for (size_t index = thread.m_id; index < thread.m_id + m_threads; index++)
       {
         auto& ownQueue = m_stealQueues[index % m_threads];
         if (ownQueue.m_group_id != thread.m_group_id)
           continue;
+#if !defined(STEALER_USE_LOCKFREE_QUEUE)
         std::unique_lock lock(ownQueue.lock);
         if (!ownQueue.loot.empty()) {
           auto freetask = ownQueue.loot.front();
@@ -331,12 +258,19 @@ class ThreadPool
           STEALER_STATS_IF m_tasks_stolen_within_l3++;
           return std::optional<FreeLoot>(freetask);
         }
+#else
+        if (!ownQueue.loot.empty() && ownQueue.loot.pop_front(stealed)) {
+          STEALER_STATS_IF m_tasks_stolen_within_l3++;
+          return std::optional<FreeLoot>(stealed);
+        }
+#endif
       }
       for (size_t index = thread.m_id; index < thread.m_id + m_threads; index++)
       {
         auto& ownQueue = m_stealQueues[index % m_threads];
         if (ownQueue.m_group_id == thread.m_group_id)
           continue;
+#if !defined(STEALER_USE_LOCKFREE_QUEUE)
         std::unique_lock lock(ownQueue.lock);
         if (!ownQueue.loot.empty()) {
           auto freetask = ownQueue.loot.front();
@@ -344,21 +278,36 @@ class ThreadPool
           STEALER_STATS_IF m_tasks_stolen_outside_l3++;
           return std::optional<FreeLoot>(freetask);
         }
+#else
+        if (!ownQueue.loot.empty() && ownQueue.loot.pop_front(stealed)) {
+          STEALER_STATS_IF m_tasks_stolen_outside_l3++;
+          return std::optional<FreeLoot>(stealed);
+        }
+#endif
       }
     }
     STEALER_STATS_IF m_steal_fails++;
     return std::optional<FreeLoot>();
   }
 
-  std::optional<FreeLoot> unfork(ThreadData& thread) noexcept {
+  bool unfork(ThreadData& thread, FreeLoot& loot) noexcept {
     auto& myStealQueue = m_stealQueues[thread.m_id];
+#if !defined(STEALER_USE_LOCKFREE_QUEUE)
     std::unique_lock lock(myStealQueue.lock);
     if (myStealQueue.loot.empty())
-      return std::optional<FreeLoot>();
+      return false;
     auto freetask = myStealQueue.loot.back();
     myStealQueue.loot.pop_back();
     STEALER_STATS_IF m_tasks_unforked++;
-    return std::optional<FreeLoot>(freetask);
+    loot = freetask;
+    return true;
+#else
+    if (myStealQueue.loot.pop_back(loot)) {
+      STEALER_STATS_IF m_tasks_unforked++;
+      return true;
+    }
+    return false;
+#endif
   }
 
   HeapAllocatorRaw& localAllocator() {
@@ -377,7 +326,6 @@ class ThreadPool
     FreeLoot loot{};
     loot.handle = handle;
     assert(counter->load() == 1);
-    //counter->store(1);
     loot.reportCompletion = counter;
     if (!data.m_coroStack.empty())
     {
@@ -392,13 +340,17 @@ class ThreadPool
     }
     // add task to own queue
     {
+#if !defined(STEALER_USE_LOCKFREE_QUEUE)
       auto& stealQueue = m_stealQueues[threadID];
       std::unique_lock lock(stealQueue.lock);
       stealQueue.loot.push_back(std::move(loot));
+#else
+      auto& stealQueue = m_stealQueues[threadID];
+      stealQueue.loot.push_back(std::move(loot));
+#endif
     }
     m_doable_tasks++;
     wakeThread(data);
-    //return reinterpret_cast<uintptr_t>(counter);
   }
 
   // called by coroutine - when entering co_await, handle is what current coroutine is depending from.
@@ -409,28 +361,7 @@ class ThreadPool
     auto& data = m_data[threadID];
 
     assert(trackerPtr != nullptr); // "tracker should be always valid");
-    //std::atomic_int* tracker = reinterpret_cast<std::atomic_int*>(trackerPtr);
     data.m_coroStack.current_stack().waitQueue.push_back(trackerPtr);
-  }
-
-  // call after all handles are allowed to be killed.
-  void updateStack(ThreadData& data, size_t allowedQueueToClear) {
-    /*/
-    auto& task = data.m_coroStack.current_stack();
-    while (allowedQueueToClear > 0) {
-      auto atomPtr = task.waitQueue.front();
-      //task.waitQueue.pop_front();
-      for (auto&& it : task.childs)
-        if (it == atomPtr)
-        {
-          //data.m_localAllocator.freeObj(it);
-          //data.m_atomics.release(it);
-          it = nullptr;
-          break;
-        }
-      allowedQueueToClear--;
-    }
-    */
   }
 
   void workOnTasks(ThreadData& myData, StealableQueue& myQueue) noexcept {
@@ -440,25 +371,17 @@ class ThreadPool
       if (executeCount > 0) {
         for (size_t run = 0; run < executeCount; ++run)
           task.handle.resume();
-        updateStack(myData, executeCount);
       }
       if (task.done()) {
         auto* ptr = task.reportCompletion;
-        //assert(task.waitQueue.empty());
-        /*
-        for (auto&& it : myData.m_coroStack.current_stack().childs) {
-          //if (it != nullptr)
-            //myData.m_localAllocator.freeObj(it);
-            //myData.m_atomics.release(it);
-        }
-        */
         myData.m_coroStack.pop_stack();
         ptr->store(0);
         STEALER_STATS_IF m_tasks_done++;
       }
       else {
-        if (auto task = unfork(myData)) {
-          myData.m_coroStack.push_stack(task.value().reportCompletion, task.value().handle);
+        FreeLoot task = {};
+        if (unfork(myData, task)) [[likely]] {
+          myData.m_coroStack.push_stack(task.reportCompletion, task.handle);
           m_doable_tasks--;
           myData.m_coroStack.current_stack().handle.resume();
         }
@@ -513,9 +436,6 @@ class ThreadPool
   void freeCompletedWork(ThreadData& data) noexcept {
     std::lock_guard<std::mutex> guard(m_global);
     while(!m_nobodyOwnsTasks.empty() && m_nobodyOwnsTasks.back().reportCompletion->load() == 0) {
-      // illegal to destroy handles here, otherwise we cannot get the value from within the handle to the caller.
-      //data.m_localAllocator.freeObj(m_nobodyOwnsTasks.back().reportCompletion);
-      //data.m_atomics.release(m_nobodyOwnsTasks.back().reportCompletion);
       m_nobodyOwnsTasks.pop_back();
       m_globalTasksLeft--;
     }

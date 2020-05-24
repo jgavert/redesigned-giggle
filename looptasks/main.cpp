@@ -78,12 +78,11 @@ coro_c::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
   auto oma = 0;
   auto stats = taskstealer_c::globals::s_stealPool->stats();
   size_t aveg = 0;
-  for (int i = 0; i < 2000; i++) {
+  for (int i = 0; i < 3000; i++) {
     auto another = addInTreeTS(treeSize, treeSize - computeTree);
     int lbs = co_await another;
     assert(a == lbs);
     auto t = static_cast<size_t>(time2.timeMicro());
-    time2.reset();
     aveg += t;
     mint = (mint > t) ? t : mint;
     maxt = (maxt < t) ? t : maxt;
@@ -105,11 +104,12 @@ coro_c::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
       maxt = oma;
       fflush(stdout);
     }
+    time2.reset();
   }
   co_return a; //co_await overlap;
 }
 
 int main(int argc, char** argv) {
   taskstealer_c::globals::createThreadPool();
-  asyncLoopTest(19, 19).get();
+  asyncLoopTest(26, 13).get();
 }
