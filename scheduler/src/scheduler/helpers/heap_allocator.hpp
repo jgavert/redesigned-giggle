@@ -9,9 +9,10 @@ class HeapAllocatorRaw {
     uintptr_t previousFree;
   };
   struct alignas(16) TLSFHeader {
-    uint64_t size : 62;
+    uint64_t size : 30;
     uint64_t lastPhysicalBlock : 1; // marks if we are the last physical block, to prevent searching for next block with nextBlockHeader
     uint64_t freeBlock : 1;
+    uint64_t identifier : 32;
     uintptr_t previousPhysBlock; // points to start of TLSFHeader
 
     bool isFreeBlock() const {
@@ -47,16 +48,17 @@ class HeapAllocatorRaw {
   struct TLSFSizeClass {
     size_t sizeClass;
     uint64_t slBitmap;
-    TLSFHeader* freeBlocks[32]; // pointer chase vector
+    TLSFHeader* freeBlocks[32] = {}; // pointer chase vector
   };
 
   struct TLSFControl {
     uint64_t flBitmap;
-    TLSFSizeClass sizeclasses[32];
+    TLSFSizeClass sizeclasses[32] = {};
   };
 
   uintptr_t m_heap;
   size_t m_heapSize;
+  uint32_t m_identifier;
 
   int fli;        // first level index
   int sli;        // second level index, typically 5
@@ -158,8 +160,14 @@ class HeapAllocatorRaw {
           auto sl2 = ffs(secondLevel2.slBitmap);
           assert(secondLevel2.freeBlocks[sl2] != nullptr);// "freeblocks expected to contain something");
           candidatePtr = sl2 >= 0 ? secondLevel2.freeBlocks[sl2] : nullptr;
+          if (candidatePtr == nullptr || candidatePtr->size < size)
+            return nullptr;
         }
+        if (candidatePtr == nullptr || candidatePtr->size < size)
+          return nullptr;
       }
+      if (candidatePtr == nullptr || candidatePtr->size < size)
+        return nullptr;
     }
     if (candidatePtr == nullptr || candidatePtr->size < size)
       return nullptr;
@@ -173,6 +181,7 @@ class HeapAllocatorRaw {
   inline TLSFHeader* split(TLSFHeader* block, size_t size) noexcept {
     // Spawn header at the split
     TLSFHeader* split = block->splittedHeader(size);
+    split->identifier = m_identifier;
     auto excessSize = block->size - size - sizeof(TLSFHeader); // need space for TLSFHeader and rest is free heap.
     split->size = excessSize;
     split->freeBlock = 0;
@@ -246,17 +255,18 @@ class HeapAllocatorRaw {
 
 public:
   HeapAllocatorRaw()
-    : m_heap(0), m_heapSize(0), mbs(16), sli(1), sli_count(1 << 3), m_usedSize(0) {
+    : m_heap(0), m_heapSize(0), m_identifier(0), mbs(16), sli(1), sli_count(1 << 3), m_usedSize(0) {
   }
 
-  HeapAllocatorRaw(void* heap, uintptr_t size, size_t minimumBlockSize = 16, int sli = 3)
-    : m_heap(reinterpret_cast<uintptr_t>(heap)), m_heapSize(size), mbs(minimumBlockSize), sli(sli), sli_count(1 << sli), m_usedSize(0) {
+  HeapAllocatorRaw(void* heap, uintptr_t size, uint32_t identifier = 0, size_t minimumBlockSize = 16, int sli = 3)
+    : m_heap(reinterpret_cast<uintptr_t>(heap)), m_heapSize(size), m_identifier(identifier), mbs(minimumBlockSize), sli(sli), sli_count(1 << sli), m_usedSize(0) {
     initialize();
     TLSFHeader* header = reinterpret_cast<TLSFHeader*>(heap);
     header->size = m_heapSize - sizeof(TLSFHeader);
     header->lastPhysicalBlock = 1;
     header->previousPhysBlock = 0;
     header->freeBlock = 1;
+    header->identifier = static_cast<uint64_t>(m_identifier);
     int fl, sl;
     mapping(header->size, fl, sl);
     insert(header, fl, sl);
@@ -295,10 +305,16 @@ public:
     free(obj);
   }
 
+  uint32_t allocationIdentifier(void* block) noexcept {
+    TLSFHeader* header = TLSFHeader::fromDataPointer(block);
+    return header->identifier;
+  }
+
   void free(void* block) noexcept {
     assert(block != nullptr);
     TLSFHeader* header = TLSFHeader::fromDataPointer(block);
     assert(header->size > 0);
+    assert(header->identifier == m_identifier);
     TLSFHeader* bigBlock = merge(header);
     int fl, sl;
     mapping(bigBlock->size, fl, sl);

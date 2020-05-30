@@ -1,7 +1,8 @@
 #pragma once
 #include "scheduler/coroutine/cpu_info.hpp"
 #include "scheduler/helpers/lockfree_queue.hpp"
-#include "scheduler/helpers/heap_allocator.hpp"
+//#include "scheduler/helpers/heap_allocator.hpp"
+#include "scheduler/helpers/dynamic_allocator.hpp"
 #include <atomic>
 #include <vector>
 #include <deque>
@@ -52,12 +53,14 @@ struct StackTask
   }
 
   bool done() const noexcept {
-    if (!handle.done())
+    return handle.done();
+    /*
       return false;
     for (auto&& child : childs) 
       if (child != nullptr && child->load() > 0)
         return false;
     return handle.done();
+    */
   }
 };
 
@@ -72,7 +75,7 @@ struct StealableQueue
 {
   size_t m_group_id = 0;
 #if defined(STEALER_USE_LOCKFREE_QUEUE)
-  rynx::parallel::per_thread_queue<FreeLoot, 1024> loot; // get it if you can :smirk:
+  rynx::parallel::per_thread_queue<FreeLoot, 262144> loot; // get it if you can :smirk:
 #else
   std::deque<FreeLoot> loot;
 #endif
@@ -122,8 +125,8 @@ struct ThreadData
   size_t m_wakeThread = 0;
   size_t m_group_id = 0;
   uint64_t m_group_mask = 0;
-  void* m_heap = nullptr;
-  HeapAllocatorRaw m_localAllocator;
+  //void* m_heap = nullptr;
+  DynamicHeapAllocator m_localAllocator;
   ThreadData(){}
   ThreadData(size_t id, size_t group_id, uint64_t group_mask):m_id(id), m_group_id(group_id), m_group_mask(group_mask){}
   ThreadData(ThreadData& other) : m_coroStack(other.m_coroStack), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask) { assert(false); }
@@ -132,20 +135,21 @@ struct ThreadData
     , m_id(other.m_id)
     , m_group_id(other.m_group_id)
     , m_group_mask(other.m_group_mask)
-    , m_heap(other.m_heap)
+    //, m_heap(other.m_heap)
     , m_localAllocator(std::move(other.m_localAllocator)) {
-    other.m_heap = nullptr;
+    //other.m_heap = nullptr;
   }
   ~ThreadData() {
-    if (m_heap)
-      free(m_heap);
+    //if (m_heap)
+    //  free(m_heap);
   }
 
   void initializeAllocator(size_t heapSize) {
-    if (m_heap == nullptr) {
-      m_heap = malloc(heapSize);
-      m_localAllocator = HeapAllocatorRaw(m_heap, heapSize);
-    }
+    //if (m_heap == nullptr) {
+      //m_heap = malloc(heapSize);
+      //m_localAllocator = HeapAllocatorRaw(m_heap, heapSize, static_cast<uint32_t>(m_id));
+      m_localAllocator = DynamicHeapAllocator(static_cast<uint16_t>(m_id));
+    //}
   }
 };
 namespace locals
@@ -214,7 +218,7 @@ class ThreadPool
     }
     size_t fullHeapForThreadPool = 1024ull * 1024ull * 1024ull;
     size_t perAllocator = fullHeapForThreadPool / m_data.size();
-    printf("allocators with %zu bytes\n", perAllocator);
+    //printf("allocators with %zu bytes\n", perAllocator);
     for (auto&& it : m_data) {
       it.initializeAllocator(perAllocator);
     }
@@ -225,6 +229,7 @@ class ThreadPool
       SetThreadAffinityMask(m_threadHandles.back().native_handle(), m_data[t].m_group_mask);
     }
   }
+
   ~ThreadPool() noexcept {
     m_poolAlive = false;
     m_doable_tasks = static_cast<int>(m_threads)+1;
@@ -310,11 +315,29 @@ class ThreadPool
 #endif
   }
 
-  HeapAllocatorRaw& localAllocator() {
+  void* localAllocate(size_t sz) {
     size_t threadID = static_cast<size_t>(locals::thread_id);
     if (!locals::thread_from_pool)
       threadID = 0;
-    return m_data[threadID].m_localAllocator;
+    return m_data[threadID].m_localAllocator.allocate(sz);
+  }
+
+  void localFree(void* ptr, size_t sz) {
+    size_t threadID = static_cast<size_t>(locals::thread_id);
+    if (!locals::thread_from_pool)
+      threadID = 0;
+    auto& data = m_data[threadID];
+    //auto ident = data.m_localAllocator.allocationIdentifier(ptr);
+    // figure out our allocator.
+    data.m_localAllocator.deallocate(ptr);
+  }
+
+  size_t localQueueSize() {
+    size_t threadID = static_cast<size_t>(locals::thread_id);
+    if (!locals::thread_from_pool)
+      threadID = 0;
+    auto& data = m_stealQueues[threadID];
+    return data.loot.size();
   }
 
   // called by coroutine - from constructor 

@@ -13,10 +13,10 @@ public:
       return StolenTask(coro_handle::from_promise(*this), &this->counter);
     }
     void* operator new(size_t sz) {
-      return taskstealer_v2::globals::s_stealPool->localAllocator().allocate(sz);
+      return taskstealer_v2::globals::s_stealPool->localAllocate(sz);
     }
-    void operator delete(void* p, size_t) {
-      taskstealer_v2::globals::s_stealPool->localAllocator().free(p);
+    void operator delete(void* p, size_t sz) {
+      taskstealer_v2::globals::s_stealPool->localFree(p, sz);
     }
     constexpr coro::suspend_always initial_suspend() noexcept {
       return {};
@@ -109,10 +109,10 @@ public:
       return StolenTask(coro_handle::from_promise(*this), &this->counter);
     }
     void* operator new(size_t sz) {
-      return taskstealer_v2::globals::s_stealPool->localAllocator().allocate(sz);
+      return taskstealer_v2::globals::s_stealPool->localAllocate(sz);
     }
-    void operator delete(void* p, size_t) {
-      taskstealer_v2::globals::s_stealPool->localAllocator().free(p);
+    void operator delete(void* p, size_t sz) {
+      taskstealer_v2::globals::s_stealPool->localFree(p, sz);
     }
     constexpr coro::suspend_always initial_suspend() noexcept {
       return {};

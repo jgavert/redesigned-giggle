@@ -64,8 +64,8 @@ namespace rynx {
         }
       }
 
-      uint32_t size() const {
-        return m_top_actual - m_bot_actual;
+      size_t size() const {
+        return static_cast<size_t>(m_top_actual - m_bot_actual);
       }
 
       bool empty() const {

@@ -75,6 +75,69 @@ namespace {
       co_await v1;
       co_return;
     }
+
+    template<typename T>
+    T TonsOfEmptyTasks(uint64_t taskCount) noexcept {
+      int sum = 0;
+      std::vector<T> tasks;
+
+      for (uint64_t i = 0; i < taskCount; ++i) {
+        tasks.emplace_back(child<T>());
+      }
+
+      for (auto&& it : tasks) {
+        if (!it.is_ready())
+          sum += co_await it;
+        else
+          sum += it.get();
+      }
+
+      co_return sum;
+    }
+
+    template<size_t ppt, typename T, typename Func>
+    coro_v2::StolenTask<void> parallel_for(T start, T end, Func&& f) {
+      size_t size = end - start;
+      while (size > 0) {
+        if (size > ppt) {
+          if (taskstealer_v2::globals::s_stealPool->localQueueSize() == 0) {
+            size_t splittedSize = size / 2;
+            auto a = parallel_for<ppt>(start, end - splittedSize, std::forward<decltype(f)>(f));
+            auto b = parallel_for<ppt>(end - splittedSize, end, std::forward<decltype(f)>(f));
+            co_await a;
+            co_await b;
+            co_return;
+          }
+        }
+        size_t doPPTWork = std::min(ppt, size);
+        
+#if 0
+        if (ppt == doPPTWork && ppt % 8 == 0) {
+          for (size_t i = 0; i < ppt; i += 8) {
+            f(*(start+i+0));
+            f(*(start+i+1));
+            f(*(start+i+2));
+            f(*(start+i+3));
+            f(*(start+i+4));
+            f(*(start+i+5));
+            f(*(start+i+6));
+            f(*(start+i+7));
+          }
+        }
+        else
+        {
+          for (T i = start; i != start+doPPTWork; ++i)
+            f(*i);
+        }
+#else
+        for (T i = start; i != start+doPPTWork; ++i)
+          f(*i);
+#endif
+        start += doPPTWork;
+        size = end - start;
+      }
+      co_return;
+    }
 }
 
 #define BenchFunction(calledFunction, argument) \
@@ -92,6 +155,9 @@ namespace {
     BenchFunctionWait(SpawnEmptyTasksInTree<coro::StolenTask<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<coro_v1::StolenTask<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<coro_v2::StolenTask<void>>, argument)
+
+#define checkAllTonsOfEmptyTasks(argument) \
+    BenchFunction(TonsOfEmptyTasks<coro_v2::StolenTask<int>>, argument)
 
 
 #define checkAllFibonacci(argument) \
@@ -120,12 +186,62 @@ TEST_CASE("Benchmark Fibonacci", "[benchmark]") {
     CHECK(FibonacciCoro<coro_v1::StolenTask<uint64_t>>(5).get() == 8);
     CHECK(FibonacciCoro<coro_v2::StolenTask<uint64_t>>(0).get() == 1);
     CHECK(FibonacciCoro<coro_v2::StolenTask<uint64_t>>(5).get() == 8);
-    checkAllFibonacci(20);
-    checkAllEmptyTasksSpawning(100);
-    checkAllEmptyTasksSpawning(1000);
-    checkAllEmptyTasksSpawning(65000);
-    checkAllEmptyTasksSpawning(100000);
-    checkAllEmptyTasksSpawning(200000);
+    CHECK(TonsOfEmptyTasks<coro_v2::StolenTask<int>>(5).get() == 5);
+    std::vector<int> lol(50000000, 1);
+    std::vector<int> ref(50000000, 1);
+    parallel_for<32>(lol.begin(), lol.end(), [](int& woot) {
+      woot = woot * 2;
+      }).wait();
+    for (int i = 0; i < ref.size(); ++i) {
+      auto refV = ref[i] * 2;
+      CHECK(refV == lol[i]);
+    }
+
+    BENCHMARK("for_each") {
+      size_t asd = 0;
+//#pragma loop(no_vector)
+      for (auto&& it : lol) {
+        it = it * 2;
+        asd += it;
+      }
+      return asd;
+    };
+    BENCHMARK("std::for_each(std::execution::par") {
+      return std::for_each(std::execution::par, lol.begin(), lol.end(), [](int& woot) {
+        woot = woot * 2;
+      });
+    };
+    BENCHMARK("std::for_each(std::execution::par_unseq") {
+      return std::for_each(std::execution::par_unseq, lol.begin(), lol.end(), [](int& woot) {
+        woot = woot * 2;
+      });
+    };
+    BENCHMARK("parallel_for<32>") {
+      return parallel_for<32>(lol.begin(), lol.end(), [](int& woot) {
+        woot = woot * 2;
+      }).wait();
+    };
+    BENCHMARK("parallel_for<256>") {
+      return parallel_for<256>(lol.begin(), lol.end(), [](int& woot) {
+        woot = woot * 2;
+      }).wait();
+    };
+    BENCHMARK("parallel_for<32768>") {
+      return parallel_for<32768>(lol.begin(), lol.end(), [](int& woot) {
+        woot = woot * 2;
+      }).wait();
+    };
+    //checkAllFibonacci(20);
+    //checkAllEmptyTasksSpawning(100);
+    //checkAllEmptyTasksSpawning(1000);
+    //checkAllEmptyTasksSpawning(65000);
+    //checkAllEmptyTasksSpawning(100000);
+    //checkAllEmptyTasksSpawning(200000);
+    //checkAllTonsOfEmptyTasks(1000);
+    //checkAllTonsOfEmptyTasks(10000);
+    //checkAllTonsOfEmptyTasks(100000);
+    //checkAllTonsOfEmptyTasks(200000);
+    //checkAllTonsOfEmptyTasks(1000000);
     /*
     BENCHMARK("Coroutine Fibonacci 25") {
         return FibonacciCoro(25, 25-parallel+1).get();
