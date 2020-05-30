@@ -3,6 +3,7 @@
 #include <scheduler/version0/stolen_task.hpp>
 #include <scheduler/version1/stolen_task_v1.hpp>
 #include <scheduler/version2/stolen_task_v2.hpp>
+#include <css/task.hpp>
 #include <scheduler/coroutine/reference_coroutine_task.hpp>
 
 #include <vector>
@@ -27,6 +28,8 @@ namespace {
     T child() {
       co_return 1;
     }
+
+    
 
     uint64_t Fibonacci(uint64_t number) noexcept {
       return number < 2 ? 1 : Fibonacci(number - 1) + Fibonacci(number - 2);
@@ -95,6 +98,10 @@ namespace {
       co_return sum;
     }
 
+    coro_v2::StolenTask<int> returnOne() {
+      co_return 1;
+    }
+
     template<size_t ppt, typename T, typename Func>
     coro_v2::StolenTask<void> parallel_for(T start, T end, Func&& f) {
       size_t size = end - start;
@@ -110,29 +117,8 @@ namespace {
           }
         }
         size_t doPPTWork = std::min(ppt, size);
-        
-#if 0
-        if (ppt == doPPTWork && ppt % 8 == 0) {
-          for (size_t i = 0; i < ppt; i += 8) {
-            f(*(start+i+0));
-            f(*(start+i+1));
-            f(*(start+i+2));
-            f(*(start+i+3));
-            f(*(start+i+4));
-            f(*(start+i+5));
-            f(*(start+i+6));
-            f(*(start+i+7));
-          }
-        }
-        else
-        {
-          for (T i = start; i != start+doPPTWork; ++i)
-            f(*i);
-        }
-#else
         for (T i = start; i != start+doPPTWork; ++i)
           f(*i);
-#endif
         start += doPPTWork;
         size = end - start;
       }
@@ -154,10 +140,12 @@ namespace {
     BenchFunctionWait(SpawnEmptyTasksInTree<reference::Task<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<coro::StolenTask<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<coro_v1::StolenTask<void>>, argument); \
-    BenchFunctionWait(SpawnEmptyTasksInTree<coro_v2::StolenTask<void>>, argument)
+    BenchFunctionWait(SpawnEmptyTasksInTree<coro_v2::StolenTask<void>>, argument); \
+    BenchFunctionWait(SpawnEmptyTasksInTree<css::Task<void>>, argument)
 
 #define checkAllTonsOfEmptyTasks(argument) \
-    BenchFunction(TonsOfEmptyTasks<coro_v2::StolenTask<int>>, argument)
+    BenchFunction(TonsOfEmptyTasks<coro_v2::StolenTask<int>>, argument); \
+    BenchFunction(TonsOfEmptyTasks<css::Task<int>>, argument)
 
 
 #define checkAllFibonacci(argument) \
@@ -166,12 +154,14 @@ namespace {
     BenchFunction(FibonacciCoro<reference::Task<uint64_t>>, argument); \
     BenchFunction(FibonacciCoro<coro::StolenTask<uint64_t>>, argument); \
     BenchFunction(FibonacciCoro<coro_v1::StolenTask<uint64_t>>, argument); \
-    BenchFunction(FibonacciCoro<coro_v2::StolenTask<uint64_t>>, argument)
+    BenchFunction(FibonacciCoro<coro_v2::StolenTask<uint64_t>>, argument); \
+    BenchFunction(FibonacciCoro<css::Task<uint64_t>>, argument)
 
 TEST_CASE("Benchmark Fibonacci", "[benchmark]") {
     taskstealer::globals::createThreadPool();
     taskstealer_v1::globals::createThreadPool();
     taskstealer_v2::globals::createThreadPool();
+    css::createThreadPool();
     reference::globals::createExecutor();
     
     CHECK(FibonacciReferenceIterative(0).get() == 1);
@@ -187,8 +177,10 @@ TEST_CASE("Benchmark Fibonacci", "[benchmark]") {
     CHECK(FibonacciCoro<coro_v2::StolenTask<uint64_t>>(0).get() == 1);
     CHECK(FibonacciCoro<coro_v2::StolenTask<uint64_t>>(5).get() == 8);
     CHECK(TonsOfEmptyTasks<coro_v2::StolenTask<int>>(5).get() == 5);
-    std::vector<int> lol(50000000, 1);
-    std::vector<int> ref(50000000, 1);
+    CHECK(FibonacciCoro<css::Task<uint64_t>>(0).get() == 1);
+    CHECK(FibonacciCoro<css::Task<uint64_t>>(5).get() == 8);
+    std::vector<int> lol( 1000000, 1);
+    std::vector<int> ref(1000000, 1);
     parallel_for<32>(lol.begin(), lol.end(), [](int& woot) {
       woot = woot * 2;
       }).wait();
@@ -231,12 +223,30 @@ TEST_CASE("Benchmark Fibonacci", "[benchmark]") {
         woot = woot * 2;
       }).wait();
     };
-    //checkAllFibonacci(20);
-    //checkAllEmptyTasksSpawning(100);
-    //checkAllEmptyTasksSpawning(1000);
-    //checkAllEmptyTasksSpawning(65000);
-    //checkAllEmptyTasksSpawning(100000);
-    //checkAllEmptyTasksSpawning(200000);
+    BENCHMARK("std::for_each(std::execution::par_unseq special") {
+      std::for_each(std::execution::par_unseq, lol.begin(), lol.end(), [](int& woot) {
+        woot = woot * 2;
+      });
+      return std::for_each(std::execution::par_unseq, ref.begin(), ref.end(), [](int& woot) {
+        woot = woot * 2;
+      });
+    };
+    BENCHMARK("parallel_for<32768> special") {
+      auto a = parallel_for<32768>(lol.begin(), lol.end(), [](int& woot) {
+        woot = woot * 2;
+      });
+      auto b = parallel_for<32768>(ref.begin(), ref.end(), [](int& woot) {
+        woot = woot * 2;
+      });
+      b.wait();
+      return a.wait();
+    };
+    checkAllFibonacci(20);
+    checkAllEmptyTasksSpawning(100);
+    checkAllEmptyTasksSpawning(1000);
+    checkAllEmptyTasksSpawning(65000);
+    checkAllEmptyTasksSpawning(100000);
+    checkAllEmptyTasksSpawning(200000);
     //checkAllTonsOfEmptyTasks(1000);
     //checkAllTonsOfEmptyTasks(10000);
     //checkAllTonsOfEmptyTasks(100000);

@@ -2,6 +2,7 @@ using Sharpmake;
 
 [module: Sharpmake.Include("common_project.sharpmake.cs")]
 [module: Sharpmake.Include("../external/externals.sharpmake.cs")]
+[module: Sharpmake.Include("scheduler_dev_versions.sharpmake.cs")]
 [module: Sharpmake.Include("scheduler.sharpmake.cs")]
 
 namespace CoroutineStealer
@@ -24,6 +25,7 @@ namespace CoroutineStealer
             base.ConfigureAll(conf, target);
             conf.Defines.Add("CATCH_CONFIG_ENABLE_BENCHMARKING");
             conf.AddPublicDependency<externals.Catch2>(target);
+            conf.AddPublicDependency<SchedulerDevVersions>(target);
             conf.AddPublicDependency<Scheduler>(target);
             conf.Output = Project.Configuration.OutputType.Exe;
         }
@@ -45,6 +47,7 @@ namespace CoroutineStealer
         public void Configure(Configuration conf, Target target)
         {
             base.ConfigureAll(conf, target);
+            conf.AddPublicDependency<SchedulerDevVersions>(target);
             conf.AddPublicDependency<Scheduler>(target);
             conf.Output = Project.Configuration.OutputType.Exe;
         }

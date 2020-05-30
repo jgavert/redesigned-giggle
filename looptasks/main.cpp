@@ -2,11 +2,14 @@
 #include <scheduler/version2/stolen_task_v2.hpp>
 #include <scheduler/version1/stolen_task_v1.hpp>
 #include <scheduler/version0/stolen_task.hpp>
+#include <css/task.hpp>
 #include <chrono>
 #include <cassert>
 
-namespace taskstealer_c = taskstealer_v2;
-namespace coro_c = coro_v2;
+//namespace taskstealer_c = taskstealer_v2::globals;
+namespace taskstealer_c = css;
+namespace coro_c = css;
+//namespace coro_c = coro_vV2;
 //namespace taskstealer_c = taskstealer;
 //namespace coro_c = coro;
 
@@ -47,7 +50,7 @@ int addInTreeNormal(int treeDepth) {
   return sum;
 }
 
-coro_c::StolenTask<int> addInTreeTS(int treeDepth, int parallelDepth) noexcept {
+coro_c::Task<int> addInTreeTS(int treeDepth, int parallelDepth) noexcept {
   if (treeDepth <= 0)
     co_return 1;
   if (treeDepth > parallelDepth) {
@@ -65,7 +68,7 @@ coro_c::StolenTask<int> addInTreeTS(int treeDepth, int parallelDepth) noexcept {
   }
 }
 
-coro_c::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
+coro_c::Task<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
   Timer time2;
   size_t mint = 0, maxt = 0;
   size_t avegMin = 0, avegMax = 0;
@@ -76,7 +79,7 @@ coro_c::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
   maxt = 0;
   auto omi = mint;
   auto oma = 0;
-  auto stats = taskstealer_c::globals::s_stealPool->stats();
+  auto stats = taskstealer_c::s_stealPool->stats();
   size_t aveg = 0;
   for (int i = 0; i < 3000; i++) {
     auto another = addInTreeTS(treeSize, treeSize - computeTree);
@@ -90,7 +93,7 @@ coro_c::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
       avegMin = avegMin + mint;
       avegMax = avegMax + maxt;
       aveCount++;
-      auto newTasksDone = taskstealer_c::globals::s_stealPool->stats();
+      auto newTasksDone = taskstealer_c::s_stealPool->stats();
       auto diffDone = (newTasksDone.tasks_done - stats.tasks_done) / 100;
       auto diffStolen = newTasksDone.tasks_stolen - stats.tasks_stolen;
       auto stealsWithinL3 = (newTasksDone.tasks_stolen_within_l3 - stats.tasks_stolen_within_l3) / float(diffStolen) * 100;
@@ -110,6 +113,6 @@ coro_c::StolenTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
 }
 
 int main(int argc, char** argv) {
-  taskstealer_c::globals::createThreadPool();
+  taskstealer_c::createThreadPool();
   asyncLoopTest(26, 13).get();
 }
