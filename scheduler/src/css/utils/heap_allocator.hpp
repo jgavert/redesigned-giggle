@@ -1,6 +1,8 @@
 #pragma once
 #include <algorithm>
 #include <cassert>
+//#include <vector>
+//#include <tuple>
 
 namespace css
 {
@@ -69,6 +71,7 @@ namespace css
     int min_fli;
     TLSFControl control;
     size_t m_usedSize;
+    //std::vector<std::tuple<TLSFHeader*, TLSFHeader, uintptr_t, bool>> event;
 
     inline int fls(uint64_t size) const noexcept {
       if (size == 0)
@@ -132,6 +135,7 @@ namespace css
       insertedBlockFree.nextFree = reinterpret_cast<uintptr_t>(freeListHead);
       insertedBlockFree.previousFree = 0;
       if (freeListHead) {
+        assert(freeListHead->identifier == m_identifier);
         auto& freePart = freeListHead->freePart();
         freePart.previousFree = reinterpret_cast<uintptr_t>(blockToInsert);
       }
@@ -159,14 +163,8 @@ namespace css
             auto sl2 = ffs(secondLevel2.slBitmap);
             assert(secondLevel2.freeBlocks[sl2] != nullptr);// "freeblocks expected to contain something");
             candidatePtr = sl2 >= 0 ? secondLevel2.freeBlocks[sl2] : nullptr;
-            if (candidatePtr == nullptr || candidatePtr->size < size)
-              return nullptr;
           }
-          if (candidatePtr == nullptr || candidatePtr->size < size)
-            return nullptr;
         }
-        if (candidatePtr == nullptr || candidatePtr->size < size)
-          return nullptr;
       }
       if (candidatePtr == nullptr || candidatePtr->size < size)
         return nullptr;
@@ -175,18 +173,30 @@ namespace css
 
     inline TLSFHeader* split(TLSFHeader* block, size_t size) noexcept {
       // Spawn header at the split
+      if (block->previousPhysBlock > 0) {
+        auto* prevBlock = block->fetchPreviousPhysBlock();
+        assert(prevBlock->identifier == m_identifier);
+      }
+      assert(block->identifier == m_identifier);
+      assert(block->size > size + sizeof(TLSFHeader));
       TLSFHeader* split = block->splittedHeader(size);
       split->identifier = m_identifier;
       auto excessSize = block->size - size - sizeof(TLSFHeader); // need space for TLSFHeader and rest is free heap.
       split->size = excessSize;
       split->freeBlock = 0;
       split->previousPhysBlock = reinterpret_cast<uintptr_t>(block);
+      if (split->previousPhysBlock > 0) {
+        auto* prevBlock = split->fetchPreviousPhysBlock();
+        assert(prevBlock->identifier == m_identifier);
+      }
       split->lastPhysicalBlock = block->lastPhysicalBlock; // inherited value
       // update the original block
       block->size = size;
       block->lastPhysicalBlock = 0; // since we splitted, we will never be last one.
       assert(block->nextBlockHeader() == split); // ensure correct link with next block
       assert(split->fetchPreviousPhysBlock() == block); // both ways correct links
+      assert(split->fetchPreviousPhysBlock()->identifier == m_identifier); // both ways correct links
+      assert(split->fetchPreviousPhysBlock()->lastPhysicalBlock == 0); // both ways correct links
       return split;
     }
 
@@ -224,16 +234,19 @@ namespace css
 
     inline TLSFHeader* merge(TLSFHeader* block) noexcept {
       // check if we have previous block
+      assert(block != nullptr);
       TLSFHeader* merged = block;
       TLSFHeader* previous = block->fetchPreviousPhysBlock();
-      if (previous != nullptr && previous->isFreeBlock())
+      if (previous != nullptr) // detect cases where previous pointer is blown up
+        assert(previous->identifier == m_identifier);
+      if (previous != nullptr && previous->identifier == m_identifier && previous->isFreeBlock())
       {
         remove(previous);
         merged = previous; // inherits previous phys block
         merged->lastPhysicalBlock = block->lastPhysicalBlock; // inherits as block came after
         merged->size += block->size + sizeof(TLSFHeader);
       }
-      if (merged == previous && !merged->isLastPhysicalBlockInPool()) {
+      if (merged && merged == previous && !merged->isLastPhysicalBlockInPool()) {
         TLSFHeader* next = merged->nextBlockHeader();
         if (next->isFreeBlock()) {
           remove(next);
@@ -287,6 +300,15 @@ namespace css
         assert(remaining_block->freeBlock == 1);// "block should be free at this point");
       }
       assert(found_block == nullptr || found_block->freeBlock == 0);// "block should be free at this point");
+      if (found_block && found_block->previousPhysBlock)
+      {
+        auto prevBlock = found_block->fetchPreviousPhysBlock();
+        assert(prevBlock->identifier == m_identifier);
+      }
+      if (found_block) {
+        //event.push_back(std::make_tuple(found_block, *found_block, reinterpret_cast<uintptr_t>(found_block), true));
+        assert(found_block->size >= size);
+      }
       return found_block ? found_block->data() : nullptr;
     }
 
@@ -302,6 +324,7 @@ namespace css
     }
 
     void free(void* block) noexcept {
+      //event.push_back(std::make_tuple(nullptr, *TLSFHeader::fromDataPointer(block), reinterpret_cast<uintptr_t>(TLSFHeader::fromDataPointer(block)), false));
       assert(block != nullptr);
       TLSFHeader* header = TLSFHeader::fromDataPointer(block);
       assert(header->size > 0);
