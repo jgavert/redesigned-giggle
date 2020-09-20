@@ -233,8 +233,8 @@ namespace css
         merged->lastPhysicalBlock = block->lastPhysicalBlock; // inherits as block came after
         merged->size += block->size + sizeof(TLSFHeader);
       }
-      if (!merged->isLastPhysicalBlockInPool()) {
-        TLSFHeader* next = block->nextBlockHeader();
+      if (merged == previous && !merged->isLastPhysicalBlockInPool()) {
+        TLSFHeader* next = merged->nextBlockHeader();
         if (next->isFreeBlock()) {
           remove(next);
           merged->lastPhysicalBlock = next->lastPhysicalBlock; // inherits as block came after
