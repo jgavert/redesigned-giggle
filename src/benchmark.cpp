@@ -154,9 +154,8 @@ namespace {
     BenchFunction(FibonacciCoro<reference::Task<uint64_t>>, argument); \
     BenchFunction(FibonacciCoro<coro::StolenTask<uint64_t>>, argument); \
     BenchFunction(FibonacciCoro<coro_v1::StolenTask<uint64_t>>, argument); \
-    BenchFunction(FibonacciCoro<coro_v2::StolenTask<uint64_t>>, argument); \
     BenchFunction(FibonacciCoro<css::Task<uint64_t>>, argument)
-
+    //BenchFunction(FibonacciCoro<coro_v2::StolenTask<uint64_t>>, argument);
 TEST_CASE("Benchmark Fibonacci", "[benchmark]") {
     taskstealer::globals::createThreadPool();
     taskstealer_v1::globals::createThreadPool();
