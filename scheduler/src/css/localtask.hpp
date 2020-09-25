@@ -5,20 +5,19 @@
 namespace css
 {
 template<typename T>
-class Task {
+class LocalTask {
 public:
   struct promise_type {
     using coro_handle = std::experimental::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
-      return Task(coro_handle::from_promise(*this), &this->counter);
+      return LocalTask(coro_handle::from_promise(*this), &this->counter);
     }
-    /*
     void* operator new(size_t sz) {
       return css::s_stealPool->localAllocate(sz);
     }
     void operator delete(void* p, size_t sz) {
       css::s_stealPool->localFree(p, sz);
-    }*/
+    }
     constexpr std::experimental::suspend_always initial_suspend() noexcept {
       return {};
     }
@@ -34,25 +33,25 @@ public:
     std::atomic_int counter = 1;
   };
   using coro_handle = std::experimental::coroutine_handle<promise_type>;
-  Task(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
+  LocalTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
     css::s_stealPool->spawnTask(handle_, counter);
   }
-  Task(Task& other) noexcept {
+  LocalTask(LocalTask& other) noexcept {
     handle_ = other.handle_;
   };
-  Task(Task&& other) noexcept {
+  LocalTask(LocalTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
     assert(handle_);
     other.handle_ = nullptr;
   }
-  Task& operator=(Task& other) noexcept {
+  LocalTask& operator=(LocalTask& other) noexcept {
     handle_ = other.handle_;
     return *this;
   };
-  Task& operator=(Task&& other) noexcept {
+  LocalTask& operator=(LocalTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
     assert(handle_);
@@ -71,7 +70,7 @@ public:
   void await_suspend(Type handle) noexcept {
     css::s_stealPool->addDependencyToCurrentTask(&handle_.promise().counter);
   }
-  ~Task() noexcept {
+  ~LocalTask() noexcept {
     if (handle_)
       handle_.destroy();
   }
@@ -102,20 +101,19 @@ private:
 
 // void version
 template <>
-class Task<void> {
+class LocalTask<void> {
 public:
   struct promise_type {
     using coro_handle = std::experimental::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
       return Task(coro_handle::from_promise(*this), &this->counter);
     }
-    /*
     void* operator new(size_t sz) {
       return css::s_stealPool->localAllocate(sz);
     }
     void operator delete(void* p, size_t sz) {
       css::s_stealPool->localFree(p, sz);
-    }*/
+    }
     constexpr std::experimental::suspend_always initial_suspend() noexcept {
       return {};
     }
@@ -130,25 +128,25 @@ public:
     std::atomic_int counter = 1;
   };
   using coro_handle = std::experimental::coroutine_handle<promise_type>;
-  Task(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
+  LocalTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
     css::s_stealPool->spawnTask(handle_, counter);
   }
-  Task(Task& other) noexcept {
+  LocalTask(Task& other) noexcept {
     handle_ = other.handle_;
   };
-  Task(Task&& other) noexcept {
+  LocalTask(LocalTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
     assert(handle_);
     other.handle_ = nullptr;
   }
-  Task& operator=(Task& other) noexcept {
+  LocalTask& operator=(LocalTask& other) noexcept {
     handle_ = other.handle_;
     return *this;
   };
-  Task& operator=(Task&& other) noexcept {
+  LocalTask& operator=(LocalTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
     assert(handle_);
@@ -166,7 +164,7 @@ public:
   void await_suspend(Type handle) noexcept {
     css::s_stealPool->addDependencyToCurrentTask(&handle_.promise().counter);
   }
-  ~Task() noexcept {
+  ~LocalTask() noexcept {
     if (handle_)
       handle_.destroy();
   }
@@ -193,7 +191,7 @@ private:
 };
 
 template<typename Func>
-Task<void> async(Func&& f)
+LocalTask<void> localAsync(Func&& f)
 {
   f();
   co_return;
