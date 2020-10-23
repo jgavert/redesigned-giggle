@@ -11,6 +11,7 @@
 #include <thread>
 #include <cassert>
 #include <algorithm>
+#include <chrono>
 #include <experimental/coroutine>
 #include <windows.h>
 
@@ -25,7 +26,7 @@
 #define CSS_STEALER_STATS_IF if (0)
 #endif
 
-namespace css 
+namespace css
 {
 namespace internal_locals
 {
@@ -33,7 +34,7 @@ namespace internal_locals
   extern thread_local int thread_id;
 }
 
-class ThreadPool 
+class ThreadPool
 {
   struct StackTask
   {
@@ -72,14 +73,14 @@ class ThreadPool
   struct StealableQueue
   {
     size_t m_group_id = 0;
-  #if defined(CSS_STEALER_USE_LOCKFREE_QUEUE)
+#if defined(CSS_STEALER_USE_LOCKFREE_QUEUE)
     css::parallel::per_thread_queue<FreeLoot, 262144> loot; // get it if you can :smirk:
-  #else
+#else
     std::deque<FreeLoot> loot;
-  #endif
+#endif
     std::mutex lock; // version 1 stealable queue works with mutex.
-    StealableQueue(size_t group_id): m_group_id(group_id){}
-    StealableQueue(StealableQueue& other): m_group_id(other.m_group_id){}
+    StealableQueue(size_t group_id) : m_group_id(group_id) {}
+    StealableQueue(StealableQueue& other) : m_group_id(other.m_group_id) {}
     StealableQueue(StealableQueue&& other) noexcept : m_group_id(other.m_group_id) {}
   };
 
@@ -92,7 +93,7 @@ class ThreadPool
 
     StackTask& current_stack() {
       assert(m_stackPointer > 0);
-      return m_coroStack[m_stackPointer-1];
+      return m_coroStack[m_stackPointer - 1];
     }
     void push_stack(std::atomic_int* reportCompletion, std::experimental::coroutine_handle<> handle) {
       assert(reportCompletion != nullptr);
@@ -124,8 +125,8 @@ class ThreadPool
     size_t m_group_id = 0;
     uint64_t m_group_mask = 0;
     DynamicHeapAllocator m_localAllocator;
-    ThreadData(){}
-    ThreadData(size_t id, size_t group_id, uint64_t group_mask):m_id(id), m_group_id(group_id), m_group_mask(group_mask){}
+    ThreadData() {}
+    ThreadData(size_t id, size_t group_id, uint64_t group_mask) :m_id(id), m_group_id(group_id), m_group_mask(group_mask) {}
     ThreadData(ThreadData& other) : m_coroStack(other.m_coroStack), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask) { assert(false); }
     ThreadData(ThreadData&& other) noexcept
       : m_coroStack(std::move(other.m_coroStack))
@@ -174,7 +175,7 @@ class ThreadPool
 public:
   StealStats stats() {
     auto stolen = m_tasks_stolen_within_l3 + m_tasks_stolen_outside_l3;
-    return {m_tasks_done, stolen, m_steal_fails, m_tasks_unforked, m_tasks_stolen_within_l3, m_tasks_stolen_outside_l3};
+    return { m_tasks_done, stolen, m_steal_fails, m_tasks_unforked, m_tasks_stolen_within_l3, m_tasks_stolen_outside_l3 };
   }
 
   ThreadPool() noexcept {
@@ -185,11 +186,11 @@ public:
     m_poolAlive = true;
     auto threadStacksLeft = m_threads;
     // configure thread datas and steal queues.
-    for (size_t group = 0; group < info.numas.front().coreGroups.size(); ++group){
+    for (size_t group = 0; group < info.numas.front().coreGroups.size(); ++group) {
       for (size_t t = 0; t < l3threads; t++) {
         if (threadStacksLeft == 0)
           break;
-        auto index = group*l3threads + t;
+        auto index = group * l3threads + t;
         m_data.emplace_back(index, group, info.numas.front().coreGroups[group].mask);
         m_stealQueues.emplace_back(group);
         threadStacksLeft--;
@@ -199,7 +200,7 @@ public:
     for (auto&& it : m_data) {
       it.initializeAllocator(8ull * 1024ull * 1024ull); // per thread allocation granularity.
     }
-    m_thread_sleeping = static_cast<int>(m_threads)-1;
+    m_thread_sleeping = static_cast<int>(m_threads) - 1;
 
     // threads started here
     SetThreadAffinityMask(GetCurrentThread(), m_data[0].m_group_mask);
@@ -211,7 +212,7 @@ public:
 
   ~ThreadPool() noexcept {
     m_poolAlive = false;
-    m_doable_tasks = static_cast<int>(m_threads)+1;
+    m_doable_tasks = static_cast<int>(m_threads) + 1;
     cv.notify_all();
     for (auto& it : m_threadHandles)
       it.join();
@@ -398,20 +399,21 @@ public:
     internal_locals::thread_from_pool = true;
     m_thread_sleeping--;
     auto& myQueue = m_stealQueues[myData.m_id];
-    while(m_poolAlive){
+    while (m_poolAlive) {
       if (auto task = stealTask(myData)) {
         myData.m_coroStack.push_stack(task.value().reportCompletion, task.value().handle);
         m_doable_tasks--;
         myData.m_coroStack.current_stack().handle.resume();
-      } else if (myData.m_coroStack.empty() && m_doable_tasks.load() == 0){
+      }
+      else if (myData.m_coroStack.empty() && m_doable_tasks.load() == 0) {
         std::unique_lock<std::mutex> lk(sleepLock);
         m_thread_sleeping++;
-        cv.wait(lk, [&](){
+        cv.wait(lk, [&]() {
           return m_doable_tasks.load() > 0;
-        });
+          });
         m_thread_sleeping--;
       }
-      while(!myData.m_coroStack.empty() || !myQueue.loot.empty())
+      while (!myData.m_coroStack.empty() || !myQueue.loot.empty())
         workOnTasks(myData, myQueue);
     }
 
@@ -432,24 +434,53 @@ public:
 
   void freeCompletedWork(ThreadData& data) noexcept {
     std::lock_guard<std::mutex> guard(m_global);
-    while(!m_nobodyOwnsTasks.empty() && m_nobodyOwnsTasks.back().reportCompletion->load() == 0) {
+    while (!m_nobodyOwnsTasks.empty() && m_nobodyOwnsTasks.back().reportCompletion->load() == 0) {
       m_nobodyOwnsTasks.pop_back();
       m_globalTasksLeft--;
     }
   }
 
-  void execute() noexcept {
+  void execute(std::atomic_int* wait) noexcept {
     auto& myData = m_data[0];
     auto& myQueue = m_stealQueues[0];
-    while(m_globalTasksLeft > 0) {
-      std::atomic_int* wait = findWorkToWaitFor();
+    while (m_globalTasksLeft > 0) {
+      //std::atomic_int* wait = findWorkToWaitFor();
       while (wait && wait->load() > 0) {
         workOnTasks(myData, myQueue);
       }
       freeCompletedWork(myData);
     }
   }
+  void executeFor(size_t microSeconds) noexcept {
+    auto& myData = m_data[0];
+    auto& myQueue = m_stealQueues[0];
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    currentTime = currentTime + std::chrono::microseconds(microSeconds);
+    const bool alone = m_data.size() == 1;
+    while (currentTime > std::chrono::high_resolution_clock::now()) {
+      std::atomic_int* wait = findWorkToWaitFor();
+      while (wait && wait->load() > 0) {
+        if (currentTime < std::chrono::high_resolution_clock::now() && (alone || myData.m_coroStack.empty()))
+          break;
+        workOnTasks(myData, myQueue);
+      }
+      freeCompletedWork(myData);
+    }
+  }
+  void waitOnQueueEmpty() noexcept {
+    size_t threadID = static_cast<size_t>(internal_locals::thread_id);
+    if (!internal_locals::thread_from_pool)
+      threadID = 0;
+    const bool alone = m_data.size() == 1;
+    if (alone)
+      return;
+    auto& myData = m_data[threadID];
+    auto& myQueue = m_stealQueues[threadID];
+    while (!myQueue.loot.empty()) {}
+  }
 };
-  void createThreadPool();
-  extern std::unique_ptr<ThreadPool> s_stealPool;
+void createThreadPool();
+void executeFor(size_t microseconds);
+void waitOwnQueueStolen();
+extern std::unique_ptr<ThreadPool> s_stealPool;
 }
