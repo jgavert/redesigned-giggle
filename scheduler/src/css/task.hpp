@@ -79,7 +79,7 @@ public:
   T get() noexcept
   {
     if (!handle_.done())
-      css::s_stealPool->execute();
+      css::s_stealPool->execute(&handle_.promise().counter);
     auto val = handle_.promise().m_value;
     return val; 
   }
@@ -174,7 +174,7 @@ public:
   void wait() noexcept
   {
     if (!handle_.done())
-      css::s_stealPool->execute();
+      css::s_stealPool->execute(&handle_.promise().counter);
   }
 
   bool is_ready() const {
