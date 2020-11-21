@@ -140,11 +140,9 @@ namespace {
     BenchFunctionWait(SpawnEmptyTasksInTree<reference::Task<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<coro::StolenTask<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<coro_v1::StolenTask<void>>, argument); \
-    BenchFunctionWait(SpawnEmptyTasksInTree<coro_v2::StolenTask<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<css::Task<void>>, argument)
 
 #define checkAllTonsOfEmptyTasks(argument) \
-    BenchFunction(TonsOfEmptyTasks<coro_v2::StolenTask<int>>, argument); \
     BenchFunction(TonsOfEmptyTasks<css::Task<int>>, argument)
 
 

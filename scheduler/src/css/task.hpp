@@ -198,4 +198,53 @@ Task<void> async(Func&& f)
   f();
   co_return;
 }
+
+/*
+template<size_t ppt, typename T, typename Func>
+css::Task<void> parallel_forCSS(T start, T end, Func&& f) {
+  size_t size = end - start;
+  while (size > 0) {
+    if (size > ppt) {
+      if (css::s_stealPool->localQueueSize() == 0) {
+        size_t splittedSize = size / 2;
+        auto a = parallel_forCSS<ppt>(start, end - splittedSize, std::forward<decltype(f)>(f));
+        auto b = parallel_forCSS<ppt>(end - splittedSize, end, std::forward<decltype(f)>(f));
+        co_await a;
+        co_await b;
+        co_return;
+      }
+    }
+    size_t doPPTWork = std::min(ppt, size);
+
+    for (T i = start; i != start+doPPTWork; ++i)
+      co_await f(*i);
+    start += doPPTWork;
+    size = end - start;
+  }
+  co_return;
+}
+
+template<size_t ppt, typename T, typename Func>
+css::Task<void> parallel_forCSS2(T start, T end, Func&& f) {
+  size_t size = end - start;
+  while (size > 0) {
+    if (size > ppt) {
+      if (css::s_stealPool->localQueueSize() == 0) {
+        size_t splittedSize = size / 2;
+        auto a = parallel_forCSS2<ppt>(start, end - splittedSize, std::forward<decltype(f)>(f));
+        auto b = parallel_forCSS2<ppt>(end - splittedSize, end, std::forward<decltype(f)>(f));
+        co_await a;
+        co_await b;
+        co_return;
+      }
+    }
+    size_t doPPTWork = std::min(ppt, size);
+
+    for (T i = start; i != start+doPPTWork; ++i)
+      f(*i);
+    start += doPPTWork;
+    size = end - start;
+  }
+  co_return;
+}*/
 }

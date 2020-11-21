@@ -71,7 +71,7 @@ class HeapAllocatorRaw {
   inline int fls(uint64_t size) const noexcept {
     if (size == 0)
       return -1;
-#ifdef HIGANBANA_PLATFORM_WINDOWS
+#if 1 
     unsigned long index;
     return _BitScanReverse64(&index, size) ? index : -1;
 #else
