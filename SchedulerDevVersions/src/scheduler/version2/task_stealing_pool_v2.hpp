@@ -12,7 +12,7 @@
 #include <thread>
 #include <cassert>
 #include <algorithm>
-#include <experimental/coroutine>
+#include <coroutine>
 #include <windows.h>
 
 // define this to enable atomic stat collection
@@ -33,7 +33,7 @@ namespace taskstealer_v2
 struct StackTask
 {
   std::atomic_int* reportCompletion = nullptr;
-  std::experimental::coroutine_handle<> handle = {};
+  std::coroutine_handle<> handle = {};
   std::vector<std::atomic_int*> childs;
   std::vector<std::atomic_int*> waitQueue; // handle address that is waited to be complete, so that handle can continue.
   size_t atomics_seen = 0;
@@ -67,7 +67,7 @@ struct StackTask
 // spawned when a coroutine is created
 struct FreeLoot
 {
-  std::experimental::coroutine_handle<> handle; // this might spawn childs, becomes host that way.
+  std::coroutine_handle<> handle; // this might spawn childs, becomes host that way.
   std::atomic_int* reportCompletion; // when task is done, inform here
 };
 
@@ -96,7 +96,7 @@ struct ThreadCoroStack
     assert(m_stackPointer > 0);
     return m_coroStack[m_stackPointer-1];
   }
-  void push_stack(std::atomic_int* reportCompletion, std::experimental::coroutine_handle<> handle) {
+  void push_stack(std::atomic_int* reportCompletion, std::coroutine_handle<> handle) {
     assert(reportCompletion != nullptr);
     m_stackPointer++;
     if (m_coroStack.size() <= m_stackPointer) {
@@ -341,7 +341,7 @@ class ThreadPool
   }
 
   // called by coroutine - from constructor 
-  void spawnTask(std::experimental::coroutine_handle<> handle, std::atomic_int* counter) noexcept {
+  void spawnTask(std::coroutine_handle<> handle, std::atomic_int* counter) noexcept {
     size_t threadID = static_cast<size_t>(locals::thread_id);
     if (!locals::thread_from_pool)
       threadID = 0;

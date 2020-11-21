@@ -8,15 +8,15 @@ template<typename T>
 class StolenTask {
 public:
   struct promise_type {
-    using coro_handle = std::experimental::coroutine_handle<promise_type>;
+    using coro_handle = std::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
       return StolenTask(coro_handle::from_promise(*this));
     }
-    constexpr coro::suspend_always initial_suspend() noexcept {
+    constexpr std::suspend_always initial_suspend() noexcept {
       return {};
     }
 
-    constexpr coro::suspend_always final_suspend() noexcept {
+    constexpr std::suspend_always final_suspend() noexcept {
       return {};
     }
     void return_value(T value) noexcept {m_value = value;}
@@ -25,7 +25,7 @@ public:
     }
     T m_value;
   };
-  using coro_handle = std::experimental::coroutine_handle<promise_type>;
+  using coro_handle = std::coroutine_handle<promise_type>;
   StolenTask(coro_handle handle) noexcept : handle_(handle)
   {
     assert(handle_);
@@ -66,7 +66,7 @@ public:
   template <typename Type>
   auto await_suspend(Type handle) noexcept {
     taskstealer::globals::s_stealPool->addDependencyToCurrentTask(handle, handle_, tracker_);
-    return coro::noop_coroutine();
+    return std::noop_coroutine();
   }
   ~StolenTask() noexcept {
     //HIGAN_ASSERT(handle_.done(), "coroutine was destroyed by the creator coroutine before coroutine was completed.");
@@ -101,7 +101,7 @@ public:
   // future then(lambda) -> attach function to be done after current Task.
   // is_ready() are you ready?
 private:
-  std::experimental::coroutine_handle<promise_type> handle_;
+  std::coroutine_handle<promise_type> handle_;
   uintptr_t tracker_ = 0;
 };
 
@@ -110,15 +110,15 @@ template <>
 class StolenTask<void> {
 public:
   struct promise_type {
-    using coro_handle = std::experimental::coroutine_handle<promise_type>;
+    using coro_handle = std::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
       return StolenTask(coro_handle::from_promise(*this));
     }
-    constexpr coro::suspend_always initial_suspend() noexcept {
+    constexpr std::suspend_always initial_suspend() noexcept {
       return {};
     }
 
-    constexpr coro::suspend_always final_suspend() noexcept {
+    constexpr std::suspend_always final_suspend() noexcept {
       return {};
     }
     void return_void() noexcept {}
@@ -126,7 +126,7 @@ public:
       std::terminate();
     }
   };
-  using coro_handle = std::experimental::coroutine_handle<promise_type>;
+  using coro_handle = std::coroutine_handle<promise_type>;
   StolenTask(coro_handle handle) noexcept : handle_(handle)
   {
     assert(handle_);
@@ -166,7 +166,7 @@ public:
   template <typename Type>
   auto await_suspend(Type handle) noexcept {
     taskstealer::globals::s_stealPool->addDependencyToCurrentTask(handle, handle_, tracker_);
-    return coro::noop_coroutine();
+    return std::noop_coroutine();
   }
   ~StolenTask() noexcept {
     //HIGAN_ASSERT(handle_.done(), "coroutine was destroyed by the creator coroutine before coroutine was completed.");
@@ -199,7 +199,7 @@ public:
   // future then(lambda) -> attach function to be done after current Task.
   // is_ready() are you ready?
 private:
-  std::experimental::coroutine_handle<> handle_;
+  std::coroutine_handle<> handle_;
   uintptr_t tracker_ = 0;
 };
 

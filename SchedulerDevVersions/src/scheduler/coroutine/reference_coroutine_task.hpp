@@ -6,7 +6,7 @@
 #include <optional>
 #include <deque>
 #include <cassert>
-#include <experimental/coroutine>
+#include <coroutine>
 #include "scheduler/coroutine/coroutine_helpers.hpp"
 
 
@@ -14,16 +14,16 @@ namespace reference
 {
 class CoroutineExecutor
 {
-  std::deque<std::experimental::coroutine_handle<>> stack;
-  std::deque<std::experimental::coroutine_handle<>> workQueue;
+  std::deque<std::coroutine_handle<>> stack;
+  std::deque<std::coroutine_handle<>> workQueue;
   public:
-  void schedule(std::experimental::coroutine_handle<> handle) {
+  void schedule(std::coroutine_handle<> handle) {
     workQueue.push_back(handle);
   }
   void reschedule() {
   }
 
-  void execute(std::experimental::coroutine_handle<> ) {
+  void execute(std::coroutine_handle<> ) {
     while(!stack.empty() || !workQueue.empty()) {
       if (workQueue.empty()) {
         auto task = stack.front();
@@ -55,19 +55,19 @@ template <typename T>
 class Task {
 public:
   struct promise_type {
-    using coro_handle = std::experimental::coroutine_handle<promise_type>;
+    using coro_handle = std::coroutine_handle<promise_type>;
     auto get_return_object() {
       return coro_handle::from_promise(*this);
     }
-    auto initial_suspend() { return std::experimental::suspend_always(); }
-    auto final_suspend() noexcept { return std::experimental::suspend_always(); }
+    auto initial_suspend() { return std::suspend_always(); }
+    auto final_suspend() noexcept { return std::suspend_always(); }
     void return_value(T value) noexcept {m_value = std::move(value);}
     void unhandled_exception() {
       std::terminate();
     }
     T m_value;
   };
-  using coro_handle = std::experimental::coroutine_handle<promise_type>;
+  using coro_handle = std::coroutine_handle<promise_type>;
   Task(coro_handle handle) : handle_(handle)
   {
     assert(handle);
@@ -105,18 +105,18 @@ template <>
 class Task<void> {
 public:
   struct promise_type {
-    using coro_handle = std::experimental::coroutine_handle<promise_type>;
+    using coro_handle = std::coroutine_handle<promise_type>;
     auto get_return_object() {
       return coro_handle::from_promise(*this);
     }
-    auto initial_suspend() { return std::experimental::suspend_always(); }
-    auto final_suspend() noexcept { return std::experimental::suspend_always(); }
+    auto initial_suspend() { return std::suspend_always(); }
+    auto final_suspend() noexcept { return std::suspend_always(); }
     void return_void() {}
     void unhandled_exception() {
       std::terminate();
     }
   };
-  using coro_handle = std::experimental::coroutine_handle<promise_type>;
+  using coro_handle = std::coroutine_handle<promise_type>;
   Task(coro_handle handle) : handle_(handle)
   {
     assert(handle);

@@ -9,7 +9,7 @@
 #include <thread>
 #include <cassert>
 #include <algorithm>
-#include <experimental/coroutine>
+#include <coroutine>
 #include <windows.h>
 
 // stealer always keeps handles alive until it can prove that all dependencies are done...
@@ -30,9 +30,9 @@ namespace taskstealer
 struct StackTask
 {
   std::atomic_int* reportCompletion;
-  std::experimental::coroutine_handle<> handle;
-  std::vector<std::pair<std::experimental::coroutine_handle<>, std::atomic_int*>> childs;
-  std::optional<std::pair<std::experimental::coroutine_handle<>, std::atomic_int*>> currentWaitJoin; // handle address that is waited to be complete, so that handle can continue.
+  std::coroutine_handle<> handle;
+  std::vector<std::pair<std::coroutine_handle<>, std::atomic_int*>> childs;
+  std::optional<std::pair<std::coroutine_handle<>, std::atomic_int*>> currentWaitJoin; // handle address that is waited to be complete, so that handle can continue.
 
   bool canExecute() const noexcept {
     if (handle.done())
@@ -54,7 +54,7 @@ struct StackTask
 // spawned when a coroutine is created
 struct FreeLoot
 {
-  std::experimental::coroutine_handle<> handle; // this might spawn childs, becomes host that way.
+  std::coroutine_handle<> handle; // this might spawn childs, becomes host that way.
   std::atomic_int* reportCompletion; // when task is done, inform here
   // I thought of separate queue where to add "completed tasks", but using atomics for icity.
 };
@@ -209,7 +209,7 @@ class ThreadPool
   }
 
   // called by coroutine - from constructor 
-  [[nodiscard]] uintptr_t spawnTask(std::experimental::coroutine_handle<> handle) noexcept {
+  [[nodiscard]] uintptr_t spawnTask(std::coroutine_handle<> handle) noexcept {
     size_t threadID = static_cast<size_t>(locals::thread_id);
     if (!locals::thread_from_pool)
       threadID = 0;
@@ -241,7 +241,7 @@ class ThreadPool
   }
 
   // called by coroutine - when entering co_await, handle is what current coroutine is depending from.
-  void addDependencyToCurrentTask(std::experimental::coroutine_handle<> handleSuspending, std::experimental::coroutine_handle<> handleNeeded, uintptr_t trackerPtr) noexcept {
+  void addDependencyToCurrentTask(std::coroutine_handle<> handleSuspending, std::coroutine_handle<> handleNeeded, uintptr_t trackerPtr) noexcept {
     size_t threadID = static_cast<size_t>(locals::thread_id);
     if (!locals::thread_from_pool)
       threadID = 0;
