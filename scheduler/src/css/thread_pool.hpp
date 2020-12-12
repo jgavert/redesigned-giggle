@@ -33,9 +33,35 @@ namespace internal_locals
   extern thread_local bool thread_from_pool;
   extern thread_local int thread_id;
 }
+struct TimeStats {
+  std::vector<size_t> threads;
+  size_t max_time_active;
+  size_t total_time_active;
+
+  inline double totalCpuPercentage() {
+    return double(total_time_active) / double(max_time_active * size());
+  }
+
+  inline double thread(size_t i) {
+    return double(threads[i]) / double(max_time_active);
+  }
+
+  inline size_t size() const {
+    return threads.size();
+  }
+};
 
 class ThreadPool
 {
+  struct ThreadTiming {
+    std::unique_ptr<std::atomic_uint64_t> time_before;
+    std::unique_ptr<std::atomic_uint64_t> time_active;
+    std::unique_ptr<std::atomic_bool> active;
+  };
+  struct Statistics {
+    std::vector<ThreadTiming> m_threads;
+    std::unique_ptr<std::atomic_uint64_t> time_before;
+  };
   struct StackTask
   {
     std::atomic_int* reportCompletion = nullptr;
@@ -172,7 +198,36 @@ class ThreadPool
   std::atomic_size_t m_tasks_stolen_outside_l3 = 0;
   std::atomic_size_t m_steal_fails = 0;
   std::atomic_size_t m_tasks_unforked = 0;
+  Statistics m_time_active;
 public:
+  // not thread safe, call only from one thread at a time.
+  TimeStats threadUsage() {
+    uint64_t currentTime = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    auto maxValue = currentTime - m_time_active.time_before->load();
+    m_time_active.time_before->store(currentTime);
+
+    TimeStats stats{};
+    auto count = m_time_active.m_threads.size();
+    stats.threads.resize(count);
+    stats.max_time_active = maxValue;
+
+    for (size_t i = 0; i < count; ++i) {
+      auto& thrd = m_time_active.m_threads[i];
+      auto val = thrd.time_active->load();
+      thrd.time_active->fetch_sub(val);
+
+      if (thrd.active) {
+        auto bef = thrd.time_before->load();
+        val += currentTime - bef;
+        thrd.time_before->store(currentTime);
+      }
+        
+      stats.threads[i] = val;
+      stats.total_time_active += stats.threads[i];
+    }
+    return stats;
+  }
+
   StealStats stats() {
     auto stolen = m_tasks_stolen_within_l3 + m_tasks_stolen_outside_l3;
     return { m_tasks_done, stolen, m_steal_fails, m_tasks_unforked, m_tasks_stolen_within_l3, m_tasks_stolen_outside_l3 };
@@ -201,6 +256,12 @@ public:
       it.initializeAllocator(8ull * 1024ull * 1024ull); // per thread allocation granularity.
     }
     m_thread_sleeping = static_cast<int>(m_threads) - 1;
+
+    m_time_active.time_before = std::make_unique<std::atomic_uint64_t>(0);
+    for (size_t t = 0; t < m_threads; t++) {
+      m_time_active.m_threads.push_back(ThreadTiming{ std::make_unique<std::atomic_uint64_t>(0), std::make_unique<std::atomic_uint64_t>(0), std::make_unique<std::atomic_bool>(false) });
+    }
+    m_time_active.time_before->store(std::chrono::high_resolution_clock::now().time_since_epoch().count());
 
     // threads started here
     SetThreadAffinityMask(GetCurrentThread(), m_data[0].m_group_mask);
@@ -398,6 +459,13 @@ public:
     internal_locals::thread_id = static_cast<int>(myData.m_id);
     internal_locals::thread_from_pool = true;
     m_thread_sleeping--;
+#if 1 // CSS_COLLECT_THREAD_AWAKE
+    {
+      auto currentTime = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+      m_time_active.m_threads[myData.m_id].time_before->store(currentTime);
+      m_time_active.m_threads[myData.m_id].active->store(true);
+    }
+#endif
     auto& myQueue = m_stealQueues[myData.m_id];
     while (m_poolAlive) {
       if (auto task = stealTask(myData)) {
@@ -408,9 +476,24 @@ public:
       else if (myData.m_coroStack.empty() && m_doable_tasks.load() == 0) {
         std::unique_lock<std::mutex> lk(sleepLock);
         m_thread_sleeping++;
+#if 1 //CSS_COLLECT_THREAD_AWAKE
+        {
+          m_time_active.m_threads[myData.m_id].active->store(false);
+          auto currentTime = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+          auto before = m_time_active.m_threads[myData.m_id].time_before->load();
+          m_time_active.m_threads[myData.m_id].time_active->fetch_add(currentTime - before);
+        }
+#endif
         cv.wait(lk, [&]() {
           return m_doable_tasks.load() > 0;
           });
+#if 1 // CSS_COLLECT_THREAD_AWAKE
+        {
+          auto currentTime = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+          m_time_active.m_threads[myData.m_id].time_before->store(currentTime);
+          m_time_active.m_threads[myData.m_id].active->store(true);
+        }
+#endif
         m_thread_sleeping--;
       }
       while (!myData.m_coroStack.empty() || !myQueue.loot.empty())
@@ -443,6 +526,11 @@ public:
   void execute(std::atomic_int* wait) noexcept {
     auto& myData = m_data[0];
     auto& myQueue = m_stealQueues[0];
+#if 1 // CSS_COLLECT_THREAD_AWAKE
+    auto currentTime = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    m_time_active.m_threads[myData.m_id].time_before->store(currentTime);
+    m_time_active.m_threads[myData.m_id].active->store(true);
+#endif
     while (m_globalTasksLeft > 0) {
       //std::atomic_int* wait = findWorkToWaitFor();
       while (wait && wait->load() > 0) {
@@ -450,12 +538,22 @@ public:
       }
       freeCompletedWork(myData);
     }
+#if 1 // CSS_COLLECT_THREAD_AWAKE
+    {
+        m_time_active.m_threads[myData.m_id].active->store(false);
+        auto currentTime = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        auto before = m_time_active.m_threads[myData.m_id].time_before->load();
+        m_time_active.m_threads[myData.m_id].time_active->fetch_add(currentTime - before);
+    }
+#endif
   }
   void executeFor(size_t microSeconds) noexcept {
     auto& myData = m_data[0];
     auto& myQueue = m_stealQueues[0];
     auto currentTime = std::chrono::high_resolution_clock::now();
     currentTime = currentTime + std::chrono::microseconds(microSeconds);
+    m_time_active.m_threads[myData.m_id].time_before->store(currentTime.time_since_epoch().count());
+    m_time_active.m_threads[myData.m_id].active->store(true);
     const bool alone = m_data.size() == 1;
     while (currentTime > std::chrono::high_resolution_clock::now()) {
       std::atomic_int* wait = findWorkToWaitFor();
@@ -466,6 +564,14 @@ public:
       }
       freeCompletedWork(myData);
     }
+#if 1 // CSS_COLLECT_THREAD_AWAKE
+    {
+      auto currentTime2 = std::chrono::high_resolution_clock::now();
+      auto before = m_time_active.m_threads[myData.m_id].time_before->load();
+      m_time_active.m_threads[myData.m_id].time_active->fetch_add(currentTime2.time_since_epoch().count() - before);
+      m_time_active.m_threads[myData.m_id].active->store(false);
+    }
+#endif
   }
   void waitOnQueueEmpty() noexcept {
     size_t threadID = static_cast<size_t>(internal_locals::thread_id);

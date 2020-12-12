@@ -101,7 +101,12 @@ coro_c::Task<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
       auto diffStealTries = (newTasksDone.steal_tries - stats.steal_tries) / 100;
       auto diffUnforked = (newTasksDone.tasks_unforked - stats.tasks_unforked) / 100;
       stats = newTasksDone;
-      printf("%d. ref: %.3fms ratio %.2f aveg: %.3fms min: %.3fms max: %.3fms tasks done: %zu tasks stolen: %zu(from within L3 cache: %.1f%%) failed steals: %zu didn't steal: %zu\n",i, refTime/1000.f, refTime / (aveg / 100.f), aveg / 100 / 1000.f, mint / 1000.f, maxt / 1000.f, diffDone, diffStolen, stealsWithinL3, diffStealTries, diffUnforked);
+      auto times = taskstealer_c::s_stealPool->threadUsage();
+      printf("%d. ref: %.3fms ratio %.2f aveg: %.3fms min: %.3fms max: %.3fms tasks done: %zu tasks stolen: %zu(from within L3 cache: %.1f%%) failed steals: %zu didn't steal: %zu cpuUse:%f\n",i, refTime/1000.f, refTime / (aveg / 100.f), aveg / 100 / 1000.f, mint / 1000.f, maxt / 1000.f, diffDone, diffStolen, stealsWithinL3, diffStealTries, diffUnforked, times.totalCpuPercentage());
+      for (size_t thread = 0; thread < times.size(); ++thread) {
+        printf("%f ", times.thread(thread));
+      }
+      printf("\n");
       aveg = 0;
       mint = omi;
       maxt = oma;
@@ -114,5 +119,11 @@ coro_c::Task<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
 
 int main(int argc, char** argv) {
   taskstealer_c::createThreadPool();
-  asyncLoopTest(26, 13).get();
+  asyncLoopTest(24, 6).get();
+  auto times = taskstealer_c::s_stealPool->threadUsage();
+  printf("cpu percentage %f\n", times.totalCpuPercentage());
+  for (size_t thread = 0; thread < times.size(); ++thread) {
+    printf("%f ", times.thread(thread));
+  }
+  printf("\n");
 }
