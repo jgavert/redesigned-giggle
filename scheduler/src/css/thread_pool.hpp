@@ -216,7 +216,7 @@ public:
       auto val = thrd.time_active->load();
       thrd.time_active->fetch_sub(val);
 
-      if (thrd.active) {
+      if (thrd.active->load()) {
         auto bef = thrd.time_before->load();
         val += currentTime - bef;
         thrd.time_before->store(currentTime);
