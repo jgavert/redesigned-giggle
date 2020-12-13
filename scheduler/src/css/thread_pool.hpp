@@ -551,9 +551,9 @@ public:
     auto& myData = m_data[0];
     auto& myQueue = m_stealQueues[0];
     auto currentTime = std::chrono::high_resolution_clock::now();
-    currentTime = currentTime + std::chrono::microseconds(microSeconds);
     m_time_active.m_threads[myData.m_id].time_before->store(currentTime.time_since_epoch().count());
     m_time_active.m_threads[myData.m_id].active->store(true);
+    currentTime = currentTime + std::chrono::microseconds(microSeconds);
     const bool alone = m_data.size() == 1;
     while (currentTime > std::chrono::high_resolution_clock::now()) {
       std::atomic_int* wait = findWorkToWaitFor();
