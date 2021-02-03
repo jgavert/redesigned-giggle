@@ -8,7 +8,7 @@ template<typename T>
 class LocalTask {
 public:
   struct promise_type {
-    using coro_handle = std::experimental::coroutine_handle<promise_type>;
+    using coro_handle = std::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
       return LocalTask(coro_handle::from_promise(*this), &this->counter);
     }
@@ -18,11 +18,11 @@ public:
     void operator delete(void* p, size_t sz) {
       css::s_stealPool->localFree(p, sz);
     }
-    constexpr std::experimental::suspend_always initial_suspend() noexcept {
+    constexpr std::suspend_always initial_suspend() noexcept {
       return {};
     }
 
-    constexpr std::experimental::suspend_always final_suspend() noexcept {
+    constexpr std::suspend_always final_suspend() noexcept {
       return {};
     }
     void return_value(T value) noexcept {m_value = value;}
@@ -32,7 +32,7 @@ public:
     T m_value;
     std::atomic_int counter = 1;
   };
-  using coro_handle = std::experimental::coroutine_handle<promise_type>;
+  using coro_handle = std::coroutine_handle<promise_type>;
   LocalTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
@@ -96,7 +96,7 @@ public:
   // future then(lambda) -> attach function to be done after current Task.
   // is_ready() are you ready?
 private:
-  std::experimental::coroutine_handle<promise_type> handle_;
+  std::coroutine_handle<promise_type> handle_;
 };
 
 // void version
@@ -104,7 +104,7 @@ template <>
 class LocalTask<void> {
 public:
   struct promise_type {
-    using coro_handle = std::experimental::coroutine_handle<promise_type>;
+    using coro_handle = std::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
       return Task(coro_handle::from_promise(*this), &this->counter);
     }
@@ -114,11 +114,11 @@ public:
     void operator delete(void* p, size_t sz) {
       css::s_stealPool->localFree(p, sz);
     }
-    constexpr std::experimental::suspend_always initial_suspend() noexcept {
+    constexpr std::suspend_always initial_suspend() noexcept {
       return {};
     }
 
-    constexpr std::experimental::suspend_always final_suspend() noexcept {
+    constexpr std::suspend_always final_suspend() noexcept {
       return {};
     }
     void return_void() noexcept {}
@@ -127,7 +127,7 @@ public:
     }
     std::atomic_int counter = 1;
   };
-  using coro_handle = std::experimental::coroutine_handle<promise_type>;
+  using coro_handle = std::coroutine_handle<promise_type>;
   LocalTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
@@ -187,7 +187,7 @@ public:
   // future then(lambda) -> attach function to be done after current Task.
   // is_ready() are you ready?
 private:
-  std::experimental::coroutine_handle<promise_type> handle_;
+  std::coroutine_handle<promise_type> handle_;
 };
 
 template<typename Func>
