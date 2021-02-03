@@ -3,6 +3,7 @@
 #include <scheduler/version1/stolen_task_v1.hpp>
 #include <scheduler/version0/stolen_task.hpp>
 #include <css/task.hpp>
+#include <css/low_prio_task.hpp>
 #include <chrono>
 #include <cassert>
 
@@ -68,7 +69,7 @@ coro_c::Task<int> addInTreeTS(int treeDepth, int parallelDepth) noexcept {
   }
 }
 
-coro_c::Task<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
+coro_c::LowPrioTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
   Timer time2;
   size_t mint = 0, maxt = 0;
   size_t avegMin = 0, avegMax = 0;

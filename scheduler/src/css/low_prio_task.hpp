@@ -5,12 +5,12 @@
 namespace css
 {
 template<typename T>
-class Task {
+class LowPrioTask {
 public:
   struct promise_type {
     using coro_handle = std::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
-      return Task(coro_handle::from_promise(*this), &this->counter);
+      return LowPrioTask(coro_handle::from_promise(*this), &this->counter);
     }
     /*
     void* operator new(size_t sz) {
@@ -34,25 +34,25 @@ public:
     std::atomic_int counter = 1;
   };
   using coro_handle = std::coroutine_handle<promise_type>;
-  Task(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
+  LowPrioTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
-    css::s_stealPool->spawnTask(handle_, counter, css::Priority::Default);
+    css::s_stealPool->spawnTask(handle_, counter, css::Priority::LowPriority);
   }
-  Task(Task& other) noexcept {
+  LowPrioTask(LowPrioTask& other) noexcept {
     handle_ = other.handle_;
   };
-  Task(Task&& other) noexcept {
+  LowPrioTask(LowPrioTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
     assert(handle_);
     other.handle_ = nullptr;
   }
-  Task& operator=(Task& other) noexcept {
+  LowPrioTask& operator=(LowPrioTask& other) noexcept {
     handle_ = other.handle_;
     return *this;
   };
-  Task& operator=(Task&& other) noexcept {
+  LowPrioTask& operator=(LowPrioTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
     assert(handle_);
@@ -71,7 +71,7 @@ public:
   void await_suspend(Type handle) noexcept {
     css::s_stealPool->addDependencyToCurrentTask(&handle_.promise().counter);
   }
-  ~Task() noexcept {
+  ~LowPrioTask() noexcept {
     if (handle_)
       handle_.destroy();
   }
@@ -102,12 +102,12 @@ private:
 
 // void version
 template <>
-class Task<void> {
+class LowPrioTask<void> {
 public:
   struct promise_type {
     using coro_handle = std::coroutine_handle<promise_type>;
     __declspec(noinline) auto get_return_object() noexcept {
-      return Task(coro_handle::from_promise(*this), &this->counter);
+      return LowPrioTask(coro_handle::from_promise(*this), &this->counter);
     }
     /*
     void* operator new(size_t sz) {
@@ -130,25 +130,25 @@ public:
     std::atomic_int counter = 1;
   };
   using coro_handle = std::coroutine_handle<promise_type>;
-  Task(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
+  LowPrioTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
-    css::s_stealPool->spawnTask(handle_, counter, css::Priority::Default);
+    css::s_stealPool->spawnTask(handle_, counter, css::Priority::LowPriority);
   }
-  Task(Task& other) noexcept {
+  LowPrioTask(LowPrioTask& other) noexcept {
     handle_ = other.handle_;
   };
-  Task(Task&& other) noexcept {
+  LowPrioTask(LowPrioTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
     assert(handle_);
     other.handle_ = nullptr;
   }
-  Task& operator=(Task& other) noexcept {
+  LowPrioTask& operator=(LowPrioTask& other) noexcept {
     handle_ = other.handle_;
     return *this;
   };
-  Task& operator=(Task&& other) noexcept {
+  LowPrioTask& operator=(LowPrioTask&& other) noexcept {
     if (other.handle_)
       handle_ = std::move(other.handle_);
     assert(handle_);
@@ -166,7 +166,7 @@ public:
   void await_suspend(Type handle) noexcept {
     css::s_stealPool->addDependencyToCurrentTask(&handle_.promise().counter);
   }
-  ~Task() noexcept {
+  ~LowPrioTask() noexcept {
     if (handle_)
       handle_.destroy();
   }
@@ -181,70 +181,14 @@ public:
     return handle_.done();
   }
 
-/*
-  explicit operator bool() const {
-    return !handle_.done();
-  }*/
-  // unwrap() future<future<int>> -> future<int>
-  // future then(lambda) -> attach function to be done after current Task.
-  // is_ready() are you ready?
 private:
   std::coroutine_handle<promise_type> handle_;
 };
 
 template<typename Func>
-Task<void> async(Func&& f)
+LowPrioTask<void> lowPrioAsync(Func&& f)
 {
   f();
   co_return;
 }
-
-/*
-template<size_t ppt, typename T, typename Func>
-css::Task<void> parallel_forCSS(T start, T end, Func&& f) {
-  size_t size = end - start;
-  while (size > 0) {
-    if (size > ppt) {
-      if (css::s_stealPool->localQueueSize() == 0) {
-        size_t splittedSize = size / 2;
-        auto a = parallel_forCSS<ppt>(start, end - splittedSize, std::forward<decltype(f)>(f));
-        auto b = parallel_forCSS<ppt>(end - splittedSize, end, std::forward<decltype(f)>(f));
-        co_await a;
-        co_await b;
-        co_return;
-      }
-    }
-    size_t doPPTWork = std::min(ppt, size);
-
-    for (T i = start; i != start+doPPTWork; ++i)
-      co_await f(*i);
-    start += doPPTWork;
-    size = end - start;
-  }
-  co_return;
-}
-
-template<size_t ppt, typename T, typename Func>
-css::Task<void> parallel_forCSS2(T start, T end, Func&& f) {
-  size_t size = end - start;
-  while (size > 0) {
-    if (size > ppt) {
-      if (css::s_stealPool->localQueueSize() == 0) {
-        size_t splittedSize = size / 2;
-        auto a = parallel_forCSS2<ppt>(start, end - splittedSize, std::forward<decltype(f)>(f));
-        auto b = parallel_forCSS2<ppt>(end - splittedSize, end, std::forward<decltype(f)>(f));
-        co_await a;
-        co_await b;
-        co_return;
-      }
-    }
-    size_t doPPTWork = std::min(ppt, size);
-
-    for (T i = start; i != start+doPPTWork; ++i)
-      f(*i);
-    start += doPPTWork;
-    size = end - start;
-  }
-  co_return;
-}*/
 }

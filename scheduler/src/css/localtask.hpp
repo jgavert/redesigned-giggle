@@ -36,7 +36,7 @@ public:
   LocalTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
-    css::s_stealPool->spawnTask(handle_, counter);
+    css::s_stealPool->spawnTask(handle_, counter, css::Priority::Default);
   }
   LocalTask(LocalTask& other) noexcept {
     handle_ = other.handle_;
@@ -131,7 +131,7 @@ public:
   LocalTask(coro_handle handle, std::atomic_int* counter) noexcept : handle_(handle)
   {
     assert(handle_);
-    css::s_stealPool->spawnTask(handle_, counter);
+    css::s_stealPool->spawnTask(handle_, counter, css::Priority::Default);
   }
   LocalTask(Task& other) noexcept {
     handle_ = other.handle_;
