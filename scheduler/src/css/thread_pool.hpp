@@ -57,7 +57,8 @@ enum class Priority
 {
   Default,
   LowPriority,
-  All
+  All,
+  ReverseAll
 };
 
 class ThreadPool
@@ -124,6 +125,9 @@ class ThreadPool
     std::deque<StackTask> m_coroStack;
     size_t m_stackPointer = 0;
     Priority m_priority = Priority::Default;
+    Priority m_forcedPriority = Priority::All;
+
+    int64_t tasksDone = 0; // below zero for lowprio tasks and + for prio tasks
 
     ThreadCoroStack() {}
 
@@ -134,7 +138,7 @@ class ThreadPool
     void push_stack(std::atomic_int* reportCompletion, std::coroutine_handle<> handle, Priority taskPrio) {
       assert(reportCompletion != nullptr);
       if (empty()) m_priority = taskPrio;
-      assert(m_priority == taskPrio);
+      //assert(m_priority == taskPrio);
       m_stackPointer++;
       if (m_coroStack.size() <= m_stackPointer) {
         m_coroStack.push_back(StackTask());
@@ -149,13 +153,20 @@ class ThreadPool
     void pop_stack() {
       assert(m_stackPointer > 0);
       m_stackPointer--;
+      tasksDone += (m_priority == Priority::Default) ? 1 : -10;
     }
     bool empty() const {
       return m_stackPointer == 0;
     }
     Priority allowedPriority() const {
-      if (empty()) return Priority::All;
+      if (m_forcedPriority != Priority::All) return m_forcedPriority;
+      if (empty()){
+        return (tasksDone < 0) ? Priority::All : Priority::ReverseAll;
+      }
       return m_priority;
+    }
+    Priority preferUnforkPriority() const {
+      return (tasksDone < 0) ? Priority::Default : Priority::LowPriority;
     }
   };
 
@@ -203,9 +214,6 @@ class ThreadPool
   // hmm, to make threads sleep in groups...? No sense to wake threads from outside L3 if L3 isn't awake, perf--
   std::mutex sleepLock;
   std::condition_variable cv;
-
-  std::mutex m_global;
-  std::vector<FreeLoot> m_nobodyOwnsTasks; // "global tasks", tasks that "main thread" owns.
 
   std::atomic_bool m_poolAlive;
   std::vector<std::thread> m_threadHandles;
@@ -360,14 +368,24 @@ public:
   std::optional<FreeLoot> stealTask(const ThreadData& thread, Priority& priority) noexcept {
     std::optional<FreeLoot> loot;
     Priority allowedPriority = thread.m_coroStack.allowedPriority();
+    if (allowedPriority == Priority::ReverseAll) {
+      loot = stealTaskInternal(m_stealQueuesLowPriority, thread);
+      if (loot) {
+        priority = Priority::LowPriority;
+        return loot;
+      }
+    }
     if (allowedPriority == Priority::All
+      || allowedPriority == Priority::ReverseAll
       || allowedPriority == Priority::Default) {
       loot = stealTaskInternal(m_stealQueues, thread);
-      priority = Priority::Default;
+      if (loot) {
+        priority = Priority::Default;
+        return loot;
+      }
     }
-    if (!loot
-      && (allowedPriority == Priority::All
-      || allowedPriority == Priority::LowPriority)) {
+    if (allowedPriority == Priority::All
+      || allowedPriority == Priority::LowPriority) {
       loot = stealTaskInternal(m_stealQueuesLowPriority, thread);
       priority = Priority::LowPriority;
     }
@@ -375,7 +393,7 @@ public:
   }
 
   bool unforkInternal(std::vector<css::ThreadPool::StealableQueue>& stealQueues, ThreadData& thread, FreeLoot& loot) noexcept {
-    auto& myStealQueue = m_stealQueues[thread.m_id];
+    auto& myStealQueue = stealQueues[thread.m_id];
 #if !defined(CSS_STEALER_USE_LOCKFREE_QUEUE)
     std::unique_lock lock(myStealQueue.lock);
     if (myStealQueue.loot.empty())
@@ -397,14 +415,32 @@ public:
   bool unfork(ThreadData& thread, FreeLoot& loot, Priority& currentPriority) noexcept {
     bool found = false;
     Priority allowedPriority = thread.m_coroStack.allowedPriority();
-    if (allowedPriority == Priority::All
-      || allowedPriority == Priority::Default) {
-      found = unforkInternal(m_stealQueues, thread, loot);
-      currentPriority = Priority::Default;
-      return found;
+    if (m_threads == 1 && (allowedPriority == Priority::Default
+      || allowedPriority == Priority::LowPriority)) {
+      allowedPriority = thread.m_coroStack.preferUnforkPriority();
     }
-    if (allowedPriority == Priority::All
-        || allowedPriority == Priority::LowPriority) {
+    if (thread.m_coroStack.m_forcedPriority == Priority::All &&
+    (allowedPriority == Priority::ReverseAll
+     || allowedPriority == Priority::LowPriority)) {
+      found = unforkInternal(m_stealQueuesLowPriority, thread, loot);
+      if (found) {
+        currentPriority = Priority::LowPriority;
+        return found;
+      }
+    }
+    if (thread.m_coroStack.m_forcedPriority == Priority::All
+    || thread.m_coroStack.m_forcedPriority == Priority::Default
+    || (m_threads == 1 && allowedPriority == Priority::LowPriority)) {
+      found = unforkInternal(m_stealQueues, thread, loot);
+      if (found){
+        currentPriority = Priority::Default;
+        return found;
+      }
+    }
+    if ((thread.m_coroStack.m_forcedPriority == Priority::All
+      && (allowedPriority == Priority::All
+       || (m_threads == 1 && allowedPriority == Priority::Default)))
+       || thread.m_coroStack.m_forcedPriority == Priority::LowPriority) {
       found = unforkInternal(m_stealQueuesLowPriority, thread, loot);
       currentPriority = Priority::LowPriority;
     }
@@ -444,16 +480,9 @@ public:
     loot.handle = handle;
     assert(counter->load() == 1);
     loot.reportCompletion = counter;
-    if (!data.m_coroStack.empty())
+    if (!data.m_coroStack.empty() && data.m_coroStack.m_priority == priority)
     {
       data.m_coroStack.current_stack().childs.push_back(counter);
-    }
-    else
-    {
-      // add to global pool for being able to track the source coroutine completion.
-      std::lock_guard<std::mutex> guard(m_global);
-      m_nobodyOwnsTasks.push_back(loot);
-      m_globalTasksLeft++;
     }
     // add task to own queue
     {
@@ -570,38 +599,18 @@ public:
     m_thread_sleeping++;
   }
 
-  std::atomic_int* findWorkToWaitFor() noexcept {
-    std::atomic_int* ptr = nullptr;
-    {
-      std::lock_guard<std::mutex> guard(m_global);
-      if (!m_nobodyOwnsTasks.empty())
-        ptr = m_nobodyOwnsTasks.back().reportCompletion;
-    }
-    return ptr;
-  }
-
-  void freeCompletedWork(ThreadData& data) noexcept {
-    std::lock_guard<std::mutex> guard(m_global);
-    while (!m_nobodyOwnsTasks.empty() && m_nobodyOwnsTasks.back().reportCompletion->load() == 0) {
-      m_nobodyOwnsTasks.pop_back();
-      m_globalTasksLeft--;
-    }
-  }
-
   void execute(std::atomic_int* wait) noexcept {
     auto& myData = m_data[0];
     auto& myQueue = m_stealQueues[0];
+    const bool alone = m_threads == 1;
+    myData.m_coroStack.m_forcedPriority = alone ? Priority::All : Priority::Default;
 #ifdef CSS_COLLECT_THREAD_AWAKE_INFORMATION
     auto currentTime = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     m_time_active.m_threads[myData.m_id].time_before->store(currentTime);
     m_time_active.m_threads[myData.m_id].active->store(true);
 #endif
-    while (m_globalTasksLeft > 0) {
-      //std::atomic_int* wait = findWorkToWaitFor();
-      while (wait && wait->load() > 0) {
-        workOnTasks(myData, myQueue);
-      }
-      freeCompletedWork(myData);
+    while (wait && wait->load() > 0) {
+      workOnTasks(myData, myQueue);
     }
 #ifdef CSS_COLLECT_THREAD_AWAKE_INFORMATION
     {
@@ -612,9 +621,12 @@ public:
     }
 #endif
   }
+
   void executeFor(size_t microSeconds) noexcept {
     auto& myData = m_data[0];
     auto& myQueue = m_stealQueues[0];
+    const bool alone = m_threads == 1;
+    myData.m_coroStack.m_forcedPriority = alone ? Priority::All : Priority::Default;
     auto currentTime = std::chrono::high_resolution_clock::now();
 #ifdef CSS_COLLECT_THREAD_AWAKE_INFORMATION
     m_time_active.m_threads[myData.m_id].time_before->store(currentTime.time_since_epoch().count());
@@ -622,34 +634,28 @@ public:
 #endif
     auto endTime = currentTime + std::chrono::microseconds(microSeconds);
     auto safeSleepUntil = endTime - std::chrono::microseconds(1000);
-    const bool alone = m_data.size() == 1;
     while (endTime > currentTime) {
       currentTime = std::chrono::high_resolution_clock::now();
-      std::atomic_int* wait = findWorkToWaitFor();
-      while (wait && wait->load() > 0) {
-        currentTime = std::chrono::high_resolution_clock::now();
-        if (endTime < currentTime && (alone || myData.m_coroStack.empty()))
-          break;
-        workOnTasks(myData, myQueue);
-        if (myData.m_coroStack.empty() && !alone && safeSleepUntil > currentTime) {
+      if (endTime < currentTime && (alone || myData.m_coroStack.empty()))
+        break;
+      workOnTasks(myData, myQueue);
+      if (myData.m_coroStack.empty() && !alone && safeSleepUntil > currentTime) {
 #ifdef CSS_COLLECT_THREAD_AWAKE_INFORMATION
-          {
-            auto before = m_time_active.m_threads[myData.m_id].time_before->load();
-            m_time_active.m_threads[myData.m_id].time_active->fetch_add(currentTime.time_since_epoch().count() - before);
-            m_time_active.m_threads[myData.m_id].active->store(false);
-          }
-#endif
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
-#ifdef CSS_COLLECT_THREAD_AWAKE_INFORMATION
-          {
-            currentTime = std::chrono::high_resolution_clock::now();
-            m_time_active.m_threads[myData.m_id].time_before->store(currentTime.time_since_epoch().count());
-            m_time_active.m_threads[myData.m_id].active->store(true);
-          }
-#endif
+        {
+          auto before = m_time_active.m_threads[myData.m_id].time_before->load();
+          m_time_active.m_threads[myData.m_id].time_active->fetch_add(currentTime.time_since_epoch().count() - before);
+          m_time_active.m_threads[myData.m_id].active->store(false);
         }
+#endif
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#ifdef CSS_COLLECT_THREAD_AWAKE_INFORMATION
+        {
+          currentTime = std::chrono::high_resolution_clock::now();
+          m_time_active.m_threads[myData.m_id].time_before->store(currentTime.time_since_epoch().count());
+          m_time_active.m_threads[myData.m_id].active->store(true);
+        }
+#endif
       }
-      freeCompletedWork(myData);
     }
 #ifdef CSS_COLLECT_THREAD_AWAKE_INFORMATION
     {
@@ -664,7 +670,7 @@ public:
     size_t threadID = static_cast<size_t>(internal_locals::thread_id);
     if (!internal_locals::thread_from_pool)
       threadID = 0;
-    const bool alone = m_data.size() == 1;
+    const bool alone = m_threads == 1;
     if (alone)
       return;
     auto& myData = m_data[threadID];
