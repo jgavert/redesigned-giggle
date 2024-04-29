@@ -76,12 +76,18 @@ coro_c::LowPrioTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
   size_t aveCount = 0;
   int a = addInTreeNormal(treeSize);
   auto refTime = time2.timeMicro();
+  for (int i = 0; i < 100; i++) {
+    time2.reset();
+    a = addInTreeNormal(treeSize);
+    refTime = time2.timeMicro();
+  }
   mint = std::numeric_limits<size_t>::max();
   maxt = 0;
   auto omi = mint;
   auto oma = 0;
   auto stats = taskstealer_c::s_stealPool->stats();
   size_t aveg = 0;
+  time2.reset();
   for (int i = 0; i < 3000; i++) {
     auto another = addInTreeTS(treeSize, treeSize - computeTree);
     int lbs = co_await another;
@@ -120,7 +126,7 @@ coro_c::LowPrioTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
 
 int main(int argc, char** argv) {
   taskstealer_c::createThreadPool();
-  asyncLoopTest(24, 6).get();
+  asyncLoopTest(22, 6).get();
   auto times = taskstealer_c::s_stealPool->threadUsage();
   printf("cpu percentage %f\n", times.totalCpuPercentage());
   for (size_t thread = 0; thread < times.size(); ++thread) {

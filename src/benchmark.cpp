@@ -3,6 +3,7 @@
 #include <scheduler/version0/stolen_task.hpp>
 #include <scheduler/version1/stolen_task_v1.hpp>
 #include <scheduler/version2/stolen_task_v2.hpp>
+#include <scheduler/version3/task_v3.hpp>
 #include <css/task.hpp>
 #include <scheduler/coroutine/reference_coroutine_task.hpp>
 
@@ -140,6 +141,7 @@ namespace {
     BenchFunctionWait(SpawnEmptyTasksInTree<reference::Task<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<coro::StolenTask<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<coro_v1::StolenTask<void>>, argument); \
+    BenchFunctionWait(SpawnEmptyTasksInTree<coro_v3::Task<void>>, argument); \
     BenchFunctionWait(SpawnEmptyTasksInTree<css::Task<void>>, argument)
 
 #define checkAllTonsOfEmptyTasks(argument) \
@@ -152,12 +154,14 @@ namespace {
     BenchFunction(FibonacciCoro<reference::Task<uint64_t>>, argument); \
     BenchFunction(FibonacciCoro<coro::StolenTask<uint64_t>>, argument); \
     BenchFunction(FibonacciCoro<coro_v1::StolenTask<uint64_t>>, argument); \
+    BenchFunction(FibonacciCoro<coro_v3::Task<uint64_t>>, argument); \
     BenchFunction(FibonacciCoro<css::Task<uint64_t>>, argument)
     //BenchFunction(FibonacciCoro<coro_v2::StolenTask<uint64_t>>, argument);
 TEST_CASE("Benchmark Fibonacci", "[benchmark]") {
     taskstealer::globals::createThreadPool();
     taskstealer_v1::globals::createThreadPool();
     taskstealer_v2::globals::createThreadPool();
+    taskstealer_v3::createThreadPool();
     css::createThreadPool();
     reference::globals::createExecutor();
     
@@ -173,6 +177,8 @@ TEST_CASE("Benchmark Fibonacci", "[benchmark]") {
     CHECK(FibonacciCoro<coro_v1::StolenTask<uint64_t>>(5).get() == 8);
     CHECK(FibonacciCoro<coro_v2::StolenTask<uint64_t>>(0).get() == 1);
     CHECK(FibonacciCoro<coro_v2::StolenTask<uint64_t>>(5).get() == 8);
+    CHECK(FibonacciCoro<coro_v3::Task<uint64_t>>(0).get() == 1);
+    CHECK(FibonacciCoro<coro_v3::Task<uint64_t>>(5).get() == 8);
     CHECK(TonsOfEmptyTasks<coro_v2::StolenTask<int>>(5).get() == 5);
     CHECK(FibonacciCoro<css::Task<uint64_t>>(0).get() == 1);
     CHECK(FibonacciCoro<css::Task<uint64_t>>(5).get() == 8);
