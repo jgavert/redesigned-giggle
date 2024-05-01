@@ -6,6 +6,7 @@ namespace internal_locals
 {
 thread_local bool thread_from_pool = false;
 thread_local int thread_id = -1;
+thread_local int thread_parallelStackID = 0;
 }
 
 std::unique_ptr<ThreadPool> s_stealPool;

@@ -4,13 +4,18 @@
 #include <scheduler/version0/stolen_task.hpp>
 #include <css/task.hpp>
 #include <css/low_prio_task.hpp>
+#include <scheduler/version3/task_v3.hpp>
+#include <scheduler/version3/low_prio_task_v3.hpp>
 #include <chrono>
 #include <cassert>
 
-//namespace taskstealer_c = taskstealer_v2::globals;
+#if 1 // use latest
 namespace taskstealer_c = css;
 namespace coro_c = css;
-//namespace coro_c = coro_vV2;
+#else
+namespace taskstealer_c = taskstealer_v3;
+namespace coro_c = coro_v3;
+#endif
 //namespace taskstealer_c = taskstealer;
 //namespace coro_c = coro;
 
@@ -70,6 +75,10 @@ coro_c::Task<int> addInTreeTS(int treeDepth, int parallelDepth) noexcept {
 }
 
 coro_c::LowPrioTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
+  // warmup
+  for (int i = 0; i < 10; i++) {
+    int a = addInTreeNormal(treeSize);
+  }
   Timer time2;
   size_t mint = 0, maxt = 0;
   size_t avegMin = 0, avegMax = 0;
@@ -88,6 +97,7 @@ coro_c::LowPrioTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
   auto stats = taskstealer_c::s_stealPool->stats();
   size_t aveg = 0;
   time2.reset();
+  Timer time3;
   for (int i = 0; i < 3000; i++) {
     auto another = addInTreeTS(treeSize, treeSize - computeTree);
     int lbs = co_await another;
@@ -96,7 +106,8 @@ coro_c::LowPrioTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
     aveg += t;
     mint = (mint > t) ? t : mint;
     maxt = (maxt < t) ? t : maxt;
-    if (i % 100 == 0) {
+    if (i % 100 == 0)
+    {
       avegMin = avegMin + mint;
       avegMax = avegMax + maxt;
       aveCount++;
@@ -108,8 +119,9 @@ coro_c::LowPrioTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
       auto diffStealTries = (newTasksDone.steal_tries - stats.steal_tries) / 100;
       auto diffUnforked = (newTasksDone.tasks_unforked - stats.tasks_unforked) / 100;
       stats = newTasksDone;
+      auto tasksInMs = float(diffDone) / (aveg / 100.f / 1000.f);
       auto times = taskstealer_c::s_stealPool->threadUsage();
-      printf("%d. ref: %.3fms ratio %.2f aveg: %.3fms min: %.3fms max: %.3fms tasks done: %zu tasks stolen: %zu(from within L3 cache: %.1f%%) failed steals: %zu didn't steal: %zu cpuUse:%f\n",i, refTime/1000.f, refTime / (aveg / 100.f), aveg / 100 / 1000.f, mint / 1000.f, maxt / 1000.f, diffDone, diffStolen, stealsWithinL3, diffStealTries, diffUnforked, times.totalCpuPercentage());
+      printf("%d. ref: %.3fms ratio %.2f aveg: %.3fms min: %.3fms max: %.3fms tasks done: %zu (%.2f tasks/ms) tasks stolen: %zu(from within L3 cache: %.1f%%) failed steals: %zu didn't steal: %zu cpuUse:%f\n",i, refTime/1000.f, refTime / (aveg / 100.f), aveg / 100 / 1000.f, mint / 1000.f, maxt / 1000.f, diffDone, tasksInMs, diffStolen, stealsWithinL3, diffStealTries, diffUnforked, times.totalCpuPercentage());
       for (size_t thread = 0; thread < times.size(); ++thread) {
         printf("%f ", times.thread(thread));
       }
@@ -121,14 +133,16 @@ coro_c::LowPrioTask<int> asyncLoopTest(int treeSize, int computeTree) noexcept {
     }
     time2.reset();
   }
+  printf("time %.2fs ", float(time3.timeMicro()) / 1000.f / 1000.f);
   co_return a; //co_await overlap;
 }
 
 int main(int argc, char** argv) {
+    Timer time;
   taskstealer_c::createThreadPool();
-  asyncLoopTest(22, 6).get();
+  asyncLoopTest(26, 10).get();
   auto times = taskstealer_c::s_stealPool->threadUsage();
-  printf("cpu percentage %f\n", times.totalCpuPercentage());
+  printf("total time %.2fs cpu percentage %f\n", float(time.timeMicro()) / 1000.f / 1000.f, times.totalCpuPercentage());
   for (size_t thread = 0; thread < times.size(); ++thread) {
     printf("%f ", times.thread(thread));
   }

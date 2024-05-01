@@ -34,6 +34,7 @@ namespace internal_locals
 {
   extern thread_local bool thread_from_pool;
   extern thread_local int thread_id;
+  extern thread_local int thread_parallelStackID;
 }
 struct TimeStats {
   std::vector<size_t> threads;
@@ -104,6 +105,7 @@ class ThreadPool
   {
     std::coroutine_handle<> handle; // this might spawn childs, becomes host that way.
     std::atomic_int* reportCompletion = nullptr; // when task is done, inform here
+    int source_stack_id = 0;
   };
 
   struct StealableQueue
@@ -158,6 +160,9 @@ class ThreadPool
     bool empty() const {
       return m_stackPointer == 0;
     }
+    // basically tasksDone balances that normal tasks are done more often than low priority tasks
+    // this allows low priority tasks to be spammed so that they never end, but normal tasks that get added later still get prioritised over them.
+    // TODO: If there is only one kind of work, this will cause the other queues to be checked always first which might be empty... therefore unnecessary
     Priority allowedPriority() const {
       if (m_forcedPriority != Priority::All) return m_forcedPriority;
       if (empty()){
@@ -170,19 +175,70 @@ class ThreadPool
     }
   };
 
+  // idea: have more than 1 ThreadCoroStack per thread
+  struct ParallelStacks
+  {
+      std::deque<ThreadCoroStack> m_stacks;
+      Priority m_priority = Priority::Default;
+      Priority m_forcedPriority = Priority::All;
+        
+      ParallelStacks() {
+          m_stacks.push_back(ThreadCoroStack());
+      }
+
+      int searchEmptyStack() const {
+          for (size_t id = 0; id < m_stacks.size(); id++) {
+              if (m_stacks[id].empty())
+                  return static_cast<int>(id);
+          }
+          return -1;
+      }
+
+      bool allEmpty() const {
+          for (auto& it : m_stacks) {
+              if (!it.empty())
+                  return false;
+          }
+          return true;
+      }
+
+      int64_t tasksDone() const {
+          int64_t val = 0;
+          for (auto& it : m_stacks) {
+              val += it.tasksDone;
+          }
+          return val;
+      }
+
+      Priority allowedPriority() const {
+          if (m_forcedPriority != Priority::All) return m_forcedPriority;
+          if (allEmpty()) {
+              return (tasksDone() < 0) ? Priority::All : Priority::ReverseAll;
+          }
+          return m_priority;
+      }
+      Priority preferUnforkPriority() const {
+          return (tasksDone() < 0) ? Priority::Default : Priority::LowPriority;
+      }
+  };
+
   struct ThreadData
   {
-    ThreadCoroStack m_coroStack;
+    ParallelStacks m_coroStack;
+    std::vector<size_t> m_l3friends;
+    std::vector<size_t> m_outsiders;
     size_t m_id = 0;
     size_t m_wakeThread = 0;
     size_t m_group_id = 0;
     uint64_t m_group_mask = 0;
     DynamicHeapAllocator m_localAllocator;
     ThreadData() {}
-    ThreadData(size_t id, size_t group_id, uint64_t group_mask) :m_id(id), m_group_id(group_id), m_group_mask(group_mask) {}
-    ThreadData(ThreadData& other) : m_coroStack(other.m_coroStack), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask) { assert(false); }
+    ThreadData(size_t id, size_t group_id, uint64_t group_mask, std::vector<size_t> l3friends, std::vector<size_t> outsiders) : m_l3friends(l3friends), m_outsiders(outsiders), m_id(id), m_group_id(group_id), m_group_mask(group_mask) {}
+    ThreadData(ThreadData& other) : m_coroStack(other.m_coroStack), m_l3friends(other.m_l3friends), m_outsiders(other.m_outsiders), m_id(other.m_id), m_group_id(other.m_group_id), m_group_mask(other.m_group_mask) { assert(false); }
     ThreadData(ThreadData&& other) noexcept
       : m_coroStack(std::move(other.m_coroStack))
+      , m_l3friends(std::move(other.m_l3friends))
+      , m_outsiders(std::move(other.m_outsiders))
       , m_id(other.m_id)
       , m_group_id(other.m_group_id)
       , m_group_mask(other.m_group_mask)
@@ -263,19 +319,39 @@ public:
   }
 
   ThreadPool() noexcept {
-    m_threads = std::thread::hardware_concurrency();
+      m_threads = 1;// std::thread::hardware_concurrency() / 2;
     SystemCpuInfo info;
     size_t l3threads = info.numas.front().threads / info.numas.front().coreGroups.size();
 
     m_poolAlive = true;
     auto threadStacksLeft = m_threads;
     // configure thread datas and steal queues.
+    size_t maxThreadCount = std::max(m_threads, (info.numas.front().coreGroups.size() - 1) * l3threads);
     for (size_t group = 0; group < info.numas.front().coreGroups.size(); ++group) {
       for (size_t t = 0; t < l3threads; t++) {
         if (threadStacksLeft == 0)
           break;
         auto index = group * l3threads + t;
-        m_data.emplace_back(index, group, info.numas.front().coreGroups[group].mask);
+        std::vector<size_t> l3Friends;
+        for (size_t f = t; f < l3threads + t; f++) {
+            auto calcIndex = group * l3threads + f % l3threads;
+            if (calcIndex != index)
+                l3Friends.push_back(calcIndex);
+        }
+        std::vector<size_t> outsiders;
+        for (size_t f = t; f < maxThreadCount + t; f++)
+        {
+            auto calcIndex = f % maxThreadCount;
+            if (calcIndex == index)
+                continue;
+            for (auto l3friend : l3Friends) {
+                if (calcIndex == l3friend)
+                    continue;
+            }
+            outsiders.push_back(calcIndex);
+        }
+
+        m_data.emplace_back(index, group, info.numas.front().coreGroups[group].mask, l3Friends, outsiders);
         m_stealQueues.emplace_back(group);
         m_stealQueuesLowPriority.emplace_back(group);
         threadStacksLeft--;
@@ -319,13 +395,15 @@ public:
       cv.notify_one();
   }
 
+  // actual task stealing implemented here
   std::optional<FreeLoot> stealTaskInternal(std::vector<css::ThreadPool::StealableQueue>& stealQueues, const ThreadData& thread) noexcept {
     FreeLoot stealed = {};
-    for (size_t index = thread.m_id; index < thread.m_id + m_threads; index++)
+    //for (size_t index = thread.m_id; index < thread.m_id + m_threads; index++)
+    for (size_t index : thread.m_l3friends)
     {
       auto& ownQueue = stealQueues[index % m_threads];
-      if (ownQueue.m_group_id != thread.m_group_id)
-        continue;
+      //if (ownQueue.m_group_id != thread.m_group_id)
+      //  continue;
 #if !defined(CSS_STEALER_USE_LOCKFREE_QUEUE)
       std::unique_lock lock(ownQueue.lock);
       if (!ownQueue.loot.empty()) {
@@ -341,11 +419,12 @@ public:
       }
 #endif
     }
-    for (size_t index = thread.m_id; index < thread.m_id + m_threads; index++)
+    //for (size_t index = thread.m_id; index < thread.m_id + m_threads; index++)
+    for (size_t index : thread.m_outsiders)
     {
       auto& ownQueue = stealQueues[index % m_threads];
-      if (ownQueue.m_group_id == thread.m_group_id)
-        continue;
+      //if (ownQueue.m_group_id == thread.m_group_id)
+      //  continue;
 #if !defined(CSS_STEALER_USE_LOCKFREE_QUEUE)
       std::unique_lock lock(ownQueue.lock);
       if (!ownQueue.loot.empty()) {
@@ -365,6 +444,7 @@ public:
     return std::optional<FreeLoot>();
   }
 
+  // handles the priority and calls internalStealTask
   std::optional<FreeLoot> stealTask(const ThreadData& thread, Priority& priority) noexcept {
     std::optional<FreeLoot> loot;
     Priority allowedPriority = thread.m_coroStack.allowedPriority();
@@ -392,8 +472,7 @@ public:
     return loot;
   }
 
-  bool unforkInternal(std::vector<css::ThreadPool::StealableQueue>& stealQueues, ThreadData& thread, FreeLoot& loot) noexcept {
-    auto& myStealQueue = stealQueues[thread.m_id];
+  bool unforkInternal(css::ThreadPool::StealableQueue& myStealQueue, FreeLoot& loot) noexcept {
 #if !defined(CSS_STEALER_USE_LOCKFREE_QUEUE)
     std::unique_lock lock(myStealQueue.lock);
     if (myStealQueue.loot.empty())
@@ -412,36 +491,40 @@ public:
 #endif
   }
 
-  bool unfork(ThreadData& thread, FreeLoot& loot, Priority& currentPriority) noexcept {
+  // Handles mostly priority, calls unforkInternal
+  bool unfork(int threadID, ParallelStacks& paraStack, FreeLoot& loot, Priority& currentPriority) noexcept {
     bool found = false;
-    Priority allowedPriority = thread.m_coroStack.allowedPriority();
+    Priority allowedPriority = paraStack.allowedPriority();
     if (m_threads == 1 && (allowedPriority == Priority::Default
       || allowedPriority == Priority::LowPriority)) {
-      allowedPriority = thread.m_coroStack.preferUnforkPriority();
+      allowedPriority = paraStack.preferUnforkPriority();
     }
-    if (thread.m_coroStack.m_forcedPriority == Priority::All &&
+    // if priority is reversed, check lowPrio first??
+    if (paraStack.m_forcedPriority == Priority::All &&
     (allowedPriority == Priority::ReverseAll
      || allowedPriority == Priority::LowPriority)) {
-      found = unforkInternal(m_stealQueuesLowPriority, thread, loot);
+      found = unforkInternal(m_stealQueuesLowPriority[threadID], loot);
       if (found) {
         currentPriority = Priority::LowPriority;
         return found;
       }
     }
-    if (thread.m_coroStack.m_forcedPriority == Priority::All
-    || thread.m_coroStack.m_forcedPriority == Priority::Default
+    // normal
+    if (paraStack.m_forcedPriority == Priority::All
+    || paraStack.m_forcedPriority == Priority::Default
     || (m_threads == 1 && allowedPriority == Priority::LowPriority)) {
-      found = unforkInternal(m_stealQueues, thread, loot);
+      found = unforkInternal(m_stealQueues[threadID], loot);
       if (found){
         currentPriority = Priority::Default;
         return found;
       }
     }
-    if ((thread.m_coroStack.m_forcedPriority == Priority::All
-      && (allowedPriority == Priority::All
-       || (m_threads == 1 && allowedPriority == Priority::Default)))
-       || thread.m_coroStack.m_forcedPriority == Priority::LowPriority) {
-      found = unforkInternal(m_stealQueuesLowPriority, thread, loot);
+    // low priority last
+    if ((paraStack.m_forcedPriority == Priority::All
+           && (allowedPriority == Priority::All
+               || (m_threads == 1 && allowedPriority == Priority::Default)))
+       || paraStack.m_forcedPriority == Priority::LowPriority) {
+      found = unforkInternal(m_stealQueuesLowPriority[threadID], loot);
       currentPriority = Priority::LowPriority;
     }
     return found;
@@ -473,6 +556,7 @@ public:
   // called by coroutine - from constructor 
   void spawnTask(std::coroutine_handle<> handle, std::atomic_int* counter, Priority priority) noexcept {
     size_t threadID = static_cast<size_t>(internal_locals::thread_id);
+    int activeStackID = internal_locals::thread_parallelStackID;
     if (!internal_locals::thread_from_pool)
       threadID = 0;
     auto& data = m_data[threadID];
@@ -480,9 +564,17 @@ public:
     loot.handle = handle;
     assert(counter->load() == 1);
     loot.reportCompletion = counter;
-    if (!data.m_coroStack.empty() && data.m_coroStack.m_priority == priority)
+    loot.source_stack_id = activeStackID;
+    // This check basically checks, do we add the spawned task as dependency to task it was spawned from
+    // basically normal task spawns a lowPrio task which is long lived and lives outside the normal task scope
+    // technically it shouldn't be handled through priority, but rather is there execution dependency or not
+    auto& stack = data.m_coroStack.m_stacks[activeStackID];
+    if (!stack.empty() && Priority::Default == priority)
     {
-      data.m_coroStack.current_stack().childs.push_back(counter);
+        stack.current_stack().childs.push_back(counter);
+    }
+    else {
+        //loot.source_stack_id = -1; // not part of stack above? Avoid associating with any existing stacks.
     }
     // add task to own queue
     {
@@ -506,46 +598,147 @@ public:
   // called by coroutine - when entering co_await, handle is what current coroutine is depending from.
   void addDependencyToCurrentTask(std::atomic_int* trackerPtr) noexcept {
     size_t threadID = static_cast<size_t>(internal_locals::thread_id);
+    int activeStackID = internal_locals::thread_parallelStackID;
     if (!internal_locals::thread_from_pool)
       threadID = 0;
     auto& data = m_data[threadID];
 
     assert(trackerPtr != nullptr); // "tracker should be always valid");
-    data.m_coroStack.current_stack().waitQueue.push_back(trackerPtr);
+    data.m_coroStack.m_stacks[activeStackID].current_stack().waitQueue.push_back(trackerPtr);
   }
 
   void workOnTasks(ThreadData& myData, StealableQueue& myQueue) noexcept {
-    if (!myData.m_coroStack.empty()) {
-      auto& task = myData.m_coroStack.current_stack();
-      auto executeCount = task.canExecute();
-      if (executeCount > 0) {
-        for (size_t run = 0; run < executeCount; ++run)
-          task.handle.resume();
+      // goals, loop through all tasks and try to do a little bit of all of them
+      // if succeed, nice
+      // if no task, create another stack and steal a task!
+
+#if 1 // new
+      // try to do a task
+      bool idle = true;
+      for (size_t stackID = 0; stackID < myData.m_coroStack.m_stacks.size(); stackID++) {
+          auto& currentStack = myData.m_coroStack.m_stacks[stackID];
+          if (!currentStack.empty()) { // has a stack that hasn't finished
+              internal_locals::thread_parallelStackID = static_cast<int>(stackID); // set stack id as active for work
+              auto& task = currentStack.current_stack();
+              auto executeCount = task.canExecute();
+              if (executeCount > 0) {
+                  idle = false;
+                  for (size_t run = 0; run < executeCount; ++run)
+                      task.handle.resume();
+              }
+              if (task.done()) { // !! a coroutine was finished, can pop it from stack
+                  auto* ptr = task.reportCompletion;
+                  currentStack.pop_stack();
+                  ptr->store(0);
+                  CSS_STEALER_STATS_IF m_tasks_done++;
+              }
+          }
       }
-      if (task.done()) {
-        auto* ptr = task.reportCompletion;
-        myData.m_coroStack.pop_stack();
-        ptr->store(0);
-        CSS_STEALER_STATS_IF m_tasks_done++;
+#define ALWAYS_LOOK_INSIDE_OWN_QUEUE
+#if defined(ALWAYS_LOOK_INSIDE_OWN_QUEUE)
+      if (idle) {
+          FreeLoot task = {};
+          Priority priority;
+          if (unfork(static_cast<int>(myData.m_id), myData.m_coroStack, task, priority)) [[likely]] {
+              // it's guaranteed that stealing from own queue is part this threads stacks
+              int stackID = task.source_stack_id;
+              auto& parallelStack = myData.m_coroStack.m_stacks[stackID];
+              parallelStack.push_stack(task.reportCompletion, task.handle, priority);
+              m_doable_tasks--;
+              // need to always work once for a new task
+              internal_locals::thread_parallelStackID = static_cast<int>(stackID);
+              parallelStack.current_stack().handle.resume();
+              idle = false;
+          }
       }
-      else {
-        FreeLoot task = {};
-        Priority priority;
-        if (unfork(myData, task, priority)) [[likely]] {
-          myData.m_coroStack.push_stack(task.reportCompletion, task.handle, priority);
-          m_doable_tasks--;
-          myData.m_coroStack.current_stack().handle.resume();
-        }
+#endif
+      int freeStackID = myData.m_coroStack.searchEmptyStack();
+      if (idle && (myData.m_coroStack.m_stacks.size() <= 4 || freeStackID != -1)) { // managed to do nothing useful above
+          // check own queue for a task
+          FreeLoot task = {};
+          Priority priority;
+#if !defined(ALWAYS_LOOK_INSIDE_OWN_QUEUE)
+          if (unfork(static_cast<int>(myData.m_id), myData.m_coroStack, task, priority)) [[likely]] {
+              // it's guaranteed that stealing from own queue is part this threads stacks
+              int stackID = -1;
+              if (task.source_stack_id >= 0) { // it's a normal task
+                  stackID = task.source_stack_id;
+              }
+              else { // needs a new stack
+                  stackID = myData.m_coroStack.searchEmptyStack();
+                  if (stackID == -1) { // cannot reuse, needs a new stack
+                      stackID = static_cast<int>(myData.m_coroStack.m_stacks.size());
+                      myData.m_coroStack.m_stacks.push_back(ThreadCoroStack());
+                  }
+              }
+              auto& parallelStack = myData.m_coroStack.m_stacks[stackID];
+              parallelStack.push_stack(task.reportCompletion, task.handle, priority);
+              m_doable_tasks--;
+              // need to always work once for a new task
+              internal_locals::thread_parallelStackID = static_cast<int>(stackID);
+              parallelStack.current_stack().handle.resume();
+          }
+          else
+#endif
+          if (auto task = stealTask(myData, priority)) { // didn't have task in own queue, steal! 
+              auto stackID = myData.m_coroStack.searchEmptyStack();
+              if (stackID == -1) { // cannot reuse, needs a new stack
+                  stackID = static_cast<int>(myData.m_coroStack.m_stacks.size());
+                  myData.m_coroStack.m_stacks.push_back(ThreadCoroStack());
+              }
+              auto& parallelStack = myData.m_coroStack.m_stacks[stackID];
+              parallelStack.push_stack(task.value().reportCompletion, task.value().handle, priority);
+              // need to always work once for a new task
+              m_doable_tasks--;
+              internal_locals::thread_parallelStackID = static_cast<int>(stackID);
+              parallelStack.current_stack().handle.resume();
+          }
       }
-    }
-    else if (myData.m_coroStack.empty()) {
-      Priority priority;
-      if (auto task = stealTask(myData, priority)) {
-        myData.m_coroStack.push_stack(task.value().reportCompletion, task.value().handle, priority);
-        m_doable_tasks--;
-        myData.m_coroStack.current_stack().handle.resume();
+      // try to prune! risky!
+      //int stackID = static_cast<int>(myData.m_coroStack.m_stacks.size()) - 1;
+      //while (stackID > 0 && myData.m_coroStack.m_stacks[stackID].empty()) {
+      //    myData.m_coroStack.m_stacks.pop_back();
+      //}
+#else // old
+      bool hadWork = false;
+      if (!myData.m_coroStack.allEmpty()) {
+          for (size_t stackID = 0; stackID < myData.m_coroStack.m_stacks.size(); stackID++) {
+              if (!myData.m_coroStack.m_stacks[stackID].empty()) {
+                  internal_locals::thread_parallelStackID = static_cast<int>(stackID);
+                  auto& currentStack = myData.m_coroStack.m_stacks[stackID];
+                  auto& task = currentStack.current_stack();
+                  auto executeCount = task.canExecute();
+                  if (executeCount > 0) {
+                      for (size_t run = 0; run < executeCount; ++run)
+                          task.handle.resume();
+                  }
+                  if (task.done()) {
+                      auto* ptr = task.reportCompletion;
+                      currentStack.pop_stack();
+                      ptr->store(0);
+                      CSS_STEALER_STATS_IF m_tasks_done++;
+                  }
+                  else {
+                      FreeLoot task = {};
+                      Priority priority;
+                      if (unfork(myData.m_id, myData.m_coroStack, task, priority)) [[likely]] {
+                          currentStack.push_stack(task.reportCompletion, task.handle, priority);
+                          m_doable_tasks--;
+                          currentStack.current_stack().handle.resume();
+                          }
+                  }
+              }
+          }
       }
-    }
+      else if (myData.m_coroStack.allEmpty()) {
+          Priority priority;
+          if (auto task = stealTask(myData, priority)) {
+              myData.m_coroStack.m_stacks[task.value().stack_id].push_stack(task.value().reportCompletion, task.value().handle, priority);
+              m_doable_tasks--;
+              myData.m_coroStack.m_stacks[task.value().stack_id].current_stack().handle.resume();
+          }
+      }
+#endif
   }
 
   void thread_loop(ThreadData& myData) noexcept {
@@ -563,11 +756,13 @@ public:
     while (m_poolAlive) {
       Priority priority;
       if (auto task = stealTask(myData, priority)) {
-        myData.m_coroStack.push_stack(task.value().reportCompletion, task.value().handle, priority);
+        auto& stack = myData.m_coroStack.m_stacks[0];
+        stack.push_stack(task.value().reportCompletion, task.value().handle, priority);
         m_doable_tasks--;
-        myData.m_coroStack.current_stack().handle.resume();
+        internal_locals::thread_parallelStackID = static_cast<int>(0);
+        stack.current_stack().handle.resume();
       }
-      else if (myData.m_coroStack.empty() && m_doable_tasks.load() == 0) {
+      else if (myData.m_coroStack.allEmpty() && m_doable_tasks.load() == 0) {
         std::unique_lock<std::mutex> lk(sleepLock);
         m_thread_sleeping++;
 #ifdef CSS_COLLECT_THREAD_AWAKE_INFORMATION
@@ -590,7 +785,7 @@ public:
 #endif
         m_thread_sleeping--;
       }
-      while (!myData.m_coroStack.empty() || !myQueue.loot.empty())
+      while (!myData.m_coroStack.allEmpty() || !myQueue.loot.empty())
         workOnTasks(myData, myQueue);
     }
 
@@ -636,10 +831,10 @@ public:
     auto safeSleepUntil = endTime - std::chrono::microseconds(1000);
     while (endTime > currentTime) {
       currentTime = std::chrono::high_resolution_clock::now();
-      if (endTime < currentTime && (alone || myData.m_coroStack.empty()))
+      if (endTime < currentTime && (alone || myData.m_coroStack.allEmpty()))
         break;
       workOnTasks(myData, myQueue);
-      if (myData.m_coroStack.empty() && !alone && safeSleepUntil > currentTime) {
+      if (myData.m_coroStack.allEmpty() && !alone && safeSleepUntil > currentTime) {
 #ifdef CSS_COLLECT_THREAD_AWAKE_INFORMATION
         {
           auto before = m_time_active.m_threads[myData.m_id].time_before->load();

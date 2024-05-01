@@ -1,7 +1,7 @@
 #pragma once
 #include "thread_pool_v3.hpp"
 
-namespace taskstealer_v3
+namespace coro_v3
 {
 template<typename T>
 class LowPrioTask {
