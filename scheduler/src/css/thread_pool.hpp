@@ -319,7 +319,7 @@ public:
   }
 
   ThreadPool() noexcept {
-      m_threads = 1;// std::thread::hardware_concurrency() / 2;
+    m_threads = std::thread::hardware_concurrency();
     SystemCpuInfo info;
     size_t l3threads = info.numas.front().threads / info.numas.front().coreGroups.size();
 
