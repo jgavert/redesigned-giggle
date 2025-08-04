@@ -145,8 +145,8 @@ namespace css
       CSS_ASSERT(sl < 64 && sl >= 0); // "sl should be valid, was fl:%d sl:%d", fl, sl);
       auto* freeListHead = sizeClass.freeBlocks[sl];
       blockToInsert->freeBlock = 1;
-      auto& insertedBlockFree = blockToInsert->freePart();
-      insertedBlockFree.nextFree = reinterpret_cast<uintptr_t>(freeListHead);
+      auto& insertedBlockFree = blockToInsert->freePart(); // this assumes that freepart actually does not contain any next freespaces, but it does
+      insertedBlockFree.nextFree = reinterpret_cast<uintptr_t>(freeListHead); 
       insertedBlockFree.previousFree = 0;
       if (freeListHead) {
         CSS_ASSERT(freeListHead->identifier == m_identifier);
@@ -159,34 +159,38 @@ namespace css
     }
 
     inline TLSFHeader* search_suitable_block(size_t size, int fl, int sl) noexcept {
-      // first step, assume we got something at fl / sl location
-      CSS_ASSERT(size > 0 && fl >= 0 && sl >= 0);
-      auto& secondLevel = control.sizeclasses[fl];
-      auto candidatePtr = secondLevel.freeBlocks[sl];
-      if (candidatePtr == nullptr || candidatePtr->size < size) {
-        sl = ffs(secondLevel.slBitmap);
-        candidatePtr = sl >= 0 ? secondLevel.freeBlocks[sl] : nullptr;
-        if (sl < 0 || candidatePtr == nullptr) { // still didn't find
-          // second step, scan bitmaps for empty slots
-          // create mask to ignore first bits, could be wrong
-          uint64_t mask = ~((1 << (fl + 1)) - 1);
-          auto fl2 = ffs(control.flBitmap & mask);
-          if (fl2 >= 0) {
-            auto& secondLevel2 = control.sizeclasses[fl2];
-            CSS_ASSERT(secondLevel2.sizeClass >= size && secondLevel2.slBitmap != 0);// "bitmap expected to have something");
-            auto sl2 = ffs(secondLevel2.slBitmap);
-            CSS_ASSERT(secondLevel2.freeBlocks[sl2] != nullptr);// "freeblocks expected to contain something");
-            candidatePtr = sl2 >= 0 ? secondLevel2.freeBlocks[sl2] : nullptr;
-            CSS_ASSERT(candidatePtr == nullptr || candidatePtr->isFreeBlock());
-          }
-          CSS_ASSERT(candidatePtr == nullptr || candidatePtr->isFreeBlock());
+        CSS_ASSERT(size > 0 && fl >= 0 && sl >= 0);
+        TLSFHeader* candidate = nullptr;
+        auto& sc = control.sizeclasses[fl];
+
+        // First, try scanning the free list within the current bucket.
+        // Mask out bits below 'sl'
+        uint64_t candidateMask = sc.slBitmap & ~((1ULL << sl) - 1);
+        while (candidateMask) {
+            // ffs returns the index of the least-significant set bit.
+            int bitIndex = ffs(candidateMask);
+            candidate = sc.freeBlocks[bitIndex];
+            if (candidate && candidate->size >= size)
+                return candidate;
+            // Remove the bit we just processed.
+            candidateMask &= candidateMask - 1;
         }
-        CSS_ASSERT(candidatePtr == nullptr || candidatePtr->isFreeBlock());
-      }
-      CSS_ASSERT(candidatePtr == nullptr || candidatePtr->isFreeBlock());
-      if (candidatePtr == nullptr || candidatePtr->size < size)
+
+        // Next, scan higher buckets (first-level).
+        // Create mask to ignore lower buckets (including the current one)
+        uint64_t fl_mask = control.flBitmap & ~((1ULL << (fl + 1)) - 1);
+        int fl2 = ffs(fl_mask);
+        if (fl2 >= 0) {
+            auto& sc2 = control.sizeclasses[fl2];
+            int sl2 = ffs(sc2.slBitmap);
+            if (sl2 >= 0) {
+                candidate = sc2.freeBlocks[sl2];
+                // In a correctly maintained TLSF, candidate should be large enough.
+                CSS_ASSERT(candidate == nullptr || candidate->isFreeBlock());
+                return candidate;
+            }
+        }
         return nullptr;
-      return candidatePtr;
     }
 
     inline TLSFHeader* split(TLSFHeader* block, size_t size) noexcept {
@@ -197,7 +201,7 @@ namespace css
         CSS_ASSERT(prevBlock->identifier == m_identifier);
       }
       CSS_ASSERT(block->identifier == m_identifier);
-      CSS_ASSERT(block->size > size + sizeof(TLSFHeader));
+      CSS_ASSERT(block->size > std::max(size,sizeof(TLSFFreeBlock)) + sizeof(TLSFHeader));
       TLSFHeader* split = block->splittedHeader(size);
       split->identifier = m_identifier;
       auto excessSize = block->size - size - sizeof(TLSFHeader); // need space for TLSFHeader and rest is free heap.
@@ -313,13 +317,14 @@ namespace css
 
     [[nodiscard]] void* allocate(size_t size) noexcept
     {
-      size = std::max(mbs, size);
+      size_t orig_size = size;
+      size = std::max(std::max(mbs, size), sizeof(TLSFFreeBlock)) + std::max(mbs, sizeof(TLSFHeader));
       int fl, sl, fl2, sl2;
       TLSFHeader* found_block, * remaining_block;
       mapping(size, fl, sl); // O(1)
       found_block = search_suitable_block(size, fl, sl);// O(1)
       remove(found_block); // O(1)
-      if (found_block && found_block->size > size + mbs + sizeof(TLSFHeader)) {
+      if (found_block && found_block->size > size + sizeof(TLSFHeader)) {
         CSS_ASSERT(found_block->freeBlock == 0);// "block shouldnt be free ");
         auto prevSize = found_block->size;
         remaining_block = split(found_block, size);
@@ -341,6 +346,7 @@ namespace css
 #endif
         CSS_ASSERT(found_block->size >= size);
       }
+      if (found_block) m_usedSize += found_block->size + sizeof(TLSFHeader);
       return found_block ? found_block->data() : nullptr;
     }
 
@@ -361,6 +367,7 @@ namespace css
 #endif
       CSS_ASSERT(block != nullptr);
       TLSFHeader* header = TLSFHeader::fromDataPointer(block);
+      if (header) m_usedSize -= (header->size + sizeof(TLSFHeader));
       CSS_ASSERT(header->size > 0);
       CSS_ASSERT(header->identifier == m_identifier);
       TLSFHeader* bigBlock = merge(header);
